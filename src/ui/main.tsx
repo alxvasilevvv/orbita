@@ -41,7 +41,7 @@ function App() {
   const [locale, setLoc] = useState<Locale>(getLocale());
   const users = useApi<any[]>("/api/dev/users");
   const me = useApi<Me>(uid ? "/api/me" : null, [uid]);
-  const approvals = useApi<any[]>(uid && me.data && !me.data.client_only ? "/api/approvals" : null, [uid, me.data?.id]);
+  const approvals = useApi<any[]>(uid && me.data?.internal ? "/api/approvals" : null, [uid, me.data?.id]);
   const show = useCallback((msg: string, err?: boolean) => { setToast({ msg, err }); setTimeout(() => setToast(null), 5000); }, []);
   const switchUser = (id: string) => { setCurrentUser(id); setUid(id); location.hash = "/"; };
   const switchLocale = (l: Locale) => { setLocale(l); setLoc(l); if (uid) api("/api/me", { method: "PATCH", body: { locale: l } }).catch(() => {}); };
@@ -52,6 +52,7 @@ function App() {
   const ops = new Set(m?.agency_ops ?? []);
   const nav: [string, string, number?][] = m?.client_only
     ? [["/", "Кабинет клиента"]]
+    : m?.auditor_only ? [["/", "Журнал аудита"]]
     : [
         ["/", "Обзор"], ["/accounts", "Аккаунты"], ["/calendar", "Календарь"], ["/approvals", "Согласования", approvals.data?.length],
         ["/engagement", "Взаимодействия"], ["/tasks", "Задачи"],
@@ -66,6 +67,7 @@ function App() {
   let page: ReactNode;
   const acc = route.match(/^\/accounts\/([^/]+)$/), c = route.match(/^\/content\/([^/]+)$/), rep = route.match(/^\/reports\/([^/]+)$/);
   if (!m) page = me.error ? <div className="notice info">{t("Выберите пользователя внизу слева, чтобы войти.")}</div> : <p className="muted">{t("Загрузка…")}</p>;
+  else if (m.auditor_only) page = <Audit />;
   else if (m.client_only) page = c ? <ContentPage id={c[1]} /> : rep ? <ReportPage id={rep[1]} /> : <PortalPage />;
   else if (acc) page = <AccountPage id={acc[1]} />;
   else if (c) page = <ContentPage id={c[1]} />;

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Queryable } from "../db/db";
-import { accountScope, audit, ConflictError, emit, NotFoundError, requireOp, ValidationError, type Ctx } from "./context";
+import { accountScope, audit, ConflictError, emit, isInternal, NotFoundError, requireOp, ValidationError, type Ctx } from "./context";
 import { APPROVAL_SENSITIVE, assertTransition, contentHash, type ContentState } from "../core/contentStateMachine";
 import { assertNotSelfApproval } from "../core/permissions";
 import { resolveLocal } from "../core/time";
@@ -9,6 +9,7 @@ import { blockingNotes, buildIsolatedContext, detectInjection, type AiProvider, 
 import { forbiddenTopicHits, jobSearchSignals } from "../core/templates";
 import { enqueuePublication } from "./publishing";
 import { mediaIssues } from "./media";
+import { cancelPendingJobs } from "./jobs";
 
 async function loadItem(q: Queryable, ctx: Ctx, itemId: string, forUpdate = false) {
   const it = (await q.query(`SELECT * FROM content_items WHERE id = $1 ${forUpdate ? "FOR UPDATE" : ""}`, [itemId])).rows[0];
@@ -63,7 +64,8 @@ async function addVersionTx(q: Queryable, ctx: Ctx, it: any, d: { body: string; 
     [it.client_id, it.id, v, d.body, media, it.account_id, hash, JSON.stringify(d.internal_notes ?? []), ctx.actor.id, d.origin ?? "human", d.ai_execution_id ?? null])).rows[0];
   // Изменение значимого содержания аннулирует прежние согласования.
   const inv = await q.query("UPDATE approval_requests SET status = 'invalidated' WHERE content_item_id = $1 AND status IN ('pending','approved') RETURNING id", [it.id]);
-  const cancelled = await q.query("UPDATE publication_jobs SET status = 'cancelled', last_error_code = 'content_changed', updated_at = now() WHERE content_item_id = $1 AND status = 'queued' RETURNING id", [it.id]);
+  // Задания прежней версии (в очереди и ожидающие ручной публикации) отменяются вместе с задачами.
+  const cancelled = { rows: await cancelPendingJobs(q, { contentItemId: it.id }, "content_changed") };
   if (inv.rows.length) await emit(q, "approval.invalidated", it.client_id, { content_item_id: it.id, account_id: it.account_id, new_version: v }, `invalidated:${it.id}:${v}`);
   if (inv.rows.length) await audit(q, ctx, { action: "approval.invalidated", entity_type: "content_item", entity_id: it.id, client_id: it.client_id, account_id: it.account_id, details: { requests: inv.rows.length, cancelled_jobs: cancelled.rows.length, new_version: v } });
   const needsReset = APPROVAL_SENSITIVE.includes(it.state) || it.state === "editorial_review";
@@ -167,8 +169,10 @@ export async function cancelContent(ctx: Ctx, itemId: string, comment: string) {
     const { it } = await loadItem(q, ctx, itemId, true);
     requireOp(ctx, "edit_content", { clientId: it.client_id, accountId: it.account_id });
     if (!comment) throw new ValidationError("Укажите причину отмены");
-    await q.query("UPDATE publication_jobs SET status = 'cancelled', last_error_code = 'content_cancelled', updated_at = now() WHERE content_item_id = $1 AND status = 'queued'", [it.id]);
-    await setState(q, ctx, it, "cancelled", {}, { reason: comment });
+    await cancelPendingJobs(q, { contentItemId: it.id }, "content_cancelled");
+    // Текст причины хранится в материале; в журнал аудита попадает только факт её наличия.
+    await q.query("UPDATE content_items SET cancel_reason = $2 WHERE id = $1", [it.id, comment.slice(0, 2000)]);
+    await setState(q, ctx, it, "cancelled", {}, { has_reason: true });
     await (await import("./ai")).recordAiDecision(q, it.id, "cancelled");
     return { state: "cancelled" };
   });
@@ -184,7 +188,7 @@ export async function listApprovals(ctx: Ctx) {
            coalesce(ci.scheduled_at, ci.planned_for) AS due_at
       FROM approval_requests r JOIN content_items ci ON ci.id = r.content_item_id JOIN managed_accounts a ON a.id = ci.account_id JOIN clients c ON c.id = a.client_id
       JOIN content_versions cv ON cv.id = r.content_version_id
-     WHERE r.status = 'pending' AND c.agency_id = $1 AND ${vis.sql}
+     WHERE r.status = 'pending' AND c.agency_id = $1 AND ${vis.sql} ${isInternal(ctx) ? "" : "AND r.stage = 'client'"}
      ORDER BY sla_overdue DESC, coalesce(ci.scheduled_at, ci.planned_for) NULLS LAST, r.created_at`, [ctx.actor.agency_id, ...vis.params])).rows;
 }
 

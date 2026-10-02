@@ -35,7 +35,7 @@ describe("взаимодействия", () => {
     await env.db.query("INSERT INTO memberships(user_id, agency_id, role, scope_client_id) SELECT $1, agency_id, 'community_manager', $2 FROM users WHERE id = $1", [env.u.author, a1.client_id]);
     const cm = actorCtx(env.db, (await loadActor(env.db, env.u.author))!);
     const r: any = await eng.createRecommendation(cm, a1.id, { ...base, target_url: "https://www.linkedin.com/in/example-elena/recent-activity", action_type: "react" });
-    expect(r.block_reasons.join(" ")).toMatch(/другому клиенту/);
+    expect(r.block_reasons.join(" ")).toMatch(/взаимная поддержка/);
   });
 
   it("однотипный комментарий для другого аккаунта и повтор блокируются", async () => {

@@ -39,8 +39,18 @@ export async function enqueuePublication(ctx: Ctx, itemId: string, runAt: Date) 
     let job = ins.rows[0];
     if (!job) {
       job = (await q.query("SELECT * FROM publication_jobs WHERE idempotency_key = $1", [key])).rows[0];
-      if (job.status === "cancelled") {
-        job = (await q.query("UPDATE publication_jobs SET status = $2, run_at = $3, mode = $4, attempts = 0, last_error_code = NULL, updated_at = now() WHERE id = $1 RETURNING *", [job.id, mode === "api" ? "queued" : "awaiting_human", runAt.toISOString(), mode])).rows[0];
+      // Повторное планирование той же версии: отменённое, остановленное или исчерпавшее попытки задание
+      // снова ставится в очередь. Неопределённый исход (unknown) и выполняемое задание не трогаем:
+      // сначала нужно проверить LinkedIn, иначе возможен дубль.
+      const stuck = ["cancelled", "failed", "dead"].includes(job.status) || (job.status === "awaiting_human" && (job.mode === "api" || mode === "api"));
+      if (stuck) {
+        job = (await q.query("UPDATE publication_jobs SET status = $2, run_at = $3, mode = $4, attempts = 0, last_error_code = NULL, last_error = NULL, lease_owner = NULL, lease_until = NULL, updated_at = now() WHERE id = $1 RETURNING *", [job.id, mode === "api" ? "queued" : "awaiting_human", runAt.toISOString(), mode])).rows[0];
+        await q.query("UPDATE tasks SET status = 'cancelled', completed_at = now() WHERE source_ref = $1 AND status IN ('open','in_progress','blocked')", [`publish_blocked:${job.id}`]);
+        if (mode === "api") await q.query("UPDATE tasks SET status = 'cancelled', completed_at = now() WHERE source_ref = $1 AND status IN ('open','in_progress','blocked')", [`assisted:${job.id}`]);
+      } else if (job.status === "awaiting_human" && mode === "assisted") {
+        job = (await q.query("UPDATE publication_jobs SET run_at = $2, updated_at = now() WHERE id = $1 RETURNING *", [job.id, runAt.toISOString()])).rows[0];
+        await q.query("UPDATE tasks SET due_at = $2 WHERE source_ref = $1 AND status IN ('open','in_progress','blocked')", [`assisted:${job.id}`, runAt.toISOString()]);
+        return { ...job, deduplicated: true };
       } else return { ...job, deduplicated: true };
     }
     if (mode === "assisted") {
@@ -123,6 +133,12 @@ export async function executeJob(deps: WorkerDeps, jobId: string, now = new Date
     const conn = (await q.query("SELECT * FROM oauth_connections WHERE account_id = $1 AND status IN ('active','expiring') ORDER BY updated_at DESC LIMIT 1", [job.account_id])).rows[0];
     if (cap?.mode !== "api" || !conn) blockers.push({ code: "capability", msg: cap?.unavailable_reason ?? "Нет активного подключения" });
     if (conn?.expires_at && new Date(conn.expires_at) <= now) blockers.push({ code: "token_expired", msg: "Срок токена истёк" });
+    // Автор публикации: страница компании только от имени организации, личный профиль только от имени его владельца.
+    const author: string | null = acc.kind === "company_page" ? acc.linkedin_urn : conn?.external_subject ?? null;
+    if (conn) {
+      if (acc.kind === "company_page" && !/^urn:li:organization:/.test(author ?? "")) blockers.push({ code: "identity", msg: "Страница компании не связана с организацией LinkedIn: публикация от имени человека запрещена" });
+      if (acc.kind !== "company_page" && (!/^urn:li:person:/.test(author ?? "") || (acc.linkedin_urn && acc.linkedin_urn !== author))) blockers.push({ code: "identity", msg: "Подключён другой профиль LinkedIn" });
+    }
     const ver = (await q.query("SELECT body, media_ids FROM content_versions WHERE id = $1", [job.content_version_id])).rows[0];
     const apiMedia = await mediaIssues(q, job.account_id, ver.media_ids, "api");
     if (apiMedia.length) blockers.push({ code: "capability", msg: apiMedia.join("; ") });
@@ -150,7 +166,7 @@ export async function executeJob(deps: WorkerDeps, jobId: string, now = new Date
     await systemSetContent(q, job, agencyId, "publishing");
     await q.query("UPDATE publication_jobs SET attempts = attempts + 1 WHERE id = $1", [job.id]);
     const ar = (await q.query("INSERT INTO action_records(client_id, account_id, action_type, target, origin, requested_at, status, evidence_type) VALUES ($1,$2,'publish_post',$3,'platform_api',now(),'requested','unconfirmed') RETURNING id", [job.client_id, job.account_id, job.content_item_id])).rows[0];
-    return { blocked: false as const, body, conn, actionId: ar.id as string, title: it.title, media: orderedMedia };
+    return { blocked: false as const, body, conn: { ...conn, author: author as string }, actionId: ar.id as string, title: it.title, media: orderedMedia };
   });
   if (pre.blocked) return `blocked:${pre.status}`;
 
@@ -165,11 +181,11 @@ export async function executeJob(deps: WorkerDeps, jobId: string, now = new Date
       if (!deps.storage) throw new IntegrationError("permanent", "storage_missing", "Хранилище файлов недоступно исполнителю");
       const data = await deps.storage.get(m.storage_key);
       if (!data) throw new IntegrationError("permanent", "media_missing", "Файл вложения не найден в хранилище");
-      const urn = await deps.adapter.uploadImage({ authorUrn: pre.conn.external_subject, accessToken: token, apiVersion: deps.apiVersion ?? "202608", data, contentType: m.mime_type });
+      const urn = await deps.adapter.uploadImage({ authorUrn: pre.conn.author, accessToken: token, apiVersion: deps.apiVersion ?? "202608", data, contentType: m.mime_type });
       await deps.db.query("UPDATE media_assets SET external_urn = $2 WHERE id = $1", [m.id, urn]);
       imageUrns.push(urn);
     }
-    const res = await deps.adapter.publishPost({ idempotencyKey: job.idempotency_key, authorUrn: pre.conn.external_subject, body: pre.body, accessToken: token, apiVersion: deps.apiVersion ?? "202608", imageUrns });
+    const res = await deps.adapter.publishPost({ idempotencyKey: job.idempotency_key, authorUrn: pre.conn.author, body: pre.body, accessToken: token, apiVersion: deps.apiVersion ?? "202608", imageUrns });
     await recordSuccess(deps.db, job, agencyId, pre.actionId, res, "api_confirmed");
     return "published";
   } catch (e) {
@@ -206,7 +222,7 @@ async function handleFailure(deps: WorkerDeps, job: any, agencyId: string, actio
       await systemSetContent(q, job, agencyId, "publication_unknown", "", { error: err.code });
     });
     const token = (await deps.secrets.get(conn.secret_ref)) ?? "";
-    const found = await deps.adapter.findPublication({ authorUrn: conn.external_subject, accessToken: token, idempotencyKey: job.idempotency_key, bodyPrefix: body.slice(0, 200) }).catch(() => null);
+    const found = await deps.adapter.findPublication({ authorUrn: conn.author ?? conn.external_subject, accessToken: token, idempotencyKey: job.idempotency_key, bodyPrefix: body.slice(0, 200) }).catch(() => null);
     if (found && found !== "not_found") {
       await db.tx(async (q) => { await q.query("UPDATE content_items SET state = 'publishing' WHERE id = $1", [job.content_item_id]); });
       await recordSuccess(db, job, agencyId, actionId, found, "api_confirmed");

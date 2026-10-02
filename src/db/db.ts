@@ -42,6 +42,9 @@ export async function createPgliteDb(dataDir?: string): Promise<Db> {
 export async function createPgDb(url: string): Promise<Db> {
   const { default: pg } = await import("pg");
   const pool = new pg.Pool({ connectionString: url, max: Number(process.env.DB_POOL_MAX ?? 30), options: "-c TimeZone=UTC" });
+  // Ошибка простаивающего соединения (перезапуск или отказ сервера БД) не должна ронять процесс:
+  // пул выбросит соединение и откроет новое при следующем запросе.
+  pool.on("error", (e) => { console.error(JSON.stringify({ level: "error", msg: "db_idle_client_error", code: (e as any).code, message: e.message })); });
   return {
     query: (sql, params) => pool.query(sql, params as any[]) as any,
     async txWith(prelude, fn) {

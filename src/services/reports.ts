@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { accountScope, audit, requireOp, ValidationError, type Ctx } from "./context";
 import { activeStrategy } from "./accounts";
-import { interactionRateByImpressions, median } from "../core/metrics";
+import { aggregate, interactionRateByImpressions, median, type MetricValue } from "../core/metrics";
 
 const Month = z.object({ month: z.string().regex(/^\d{4}-\d{2}$/) });
 function monthRange(month: string) {
@@ -24,7 +24,13 @@ export async function generateMonthlyReport(ctx: Ctx, accountId: string, input: 
   const s = await activeStrategy(q, accountId);
   const kpi = s?.playbook?.primary_kpi ?? "qualified_inquiries";
   const kpiSum = async (from: Date, to: Date) => {
-    const m = (await q.query(`SELECT sum(value)::float AS v, count(*)::int AS n FROM metric_snapshots WHERE account_id = $1 AND metric_key = $2 AND value IS NOT NULL AND content_item_id IS NULL AND coalesce(period_end, observed_at) >= $3 AND coalesce(period_end, observed_at) < $4`, [accountId, kpi, from.toISOString(), to.toISOString()])).rows[0];
+    // Природа показателя из справочника: накопительные и моментные снимки не суммируются,
+    // периодические суммируются только при явных непересекающихся периодах (см. aggregate).
+    const rows = (await q.query(`SELECT ms.metric_key, ms.value::float AS value, ms.observed_at, ms.period_start, ms.period_end, ms.availability_status, coalesce(md.nature, 'periodic') AS nature
+       FROM metric_snapshots ms LEFT JOIN metric_definitions md ON md.key = ms.metric_key
+      WHERE ms.account_id = $1 AND ms.metric_key = $2 AND ms.value IS NOT NULL AND ms.content_item_id IS NULL AND coalesce(ms.period_end, ms.observed_at) >= $3 AND coalesce(ms.period_end, ms.observed_at) < $4`,
+      [accountId, kpi, from.toISOString(), to.toISOString()])).rows as MetricValue[];
+    const m = { v: rows.length ? aggregate(rows).value : null, n: rows.length };
     const o = (await q.query("SELECT count(*)::int AS n FROM opportunities WHERE account_id = $1 AND created_at >= $2 AND created_at < $3", [accountId, from.toISOString(), to.toISOString()])).rows[0];
     return { metric: m.n ? m.v : null, observations: m.n, opportunities: o.n };
   };

@@ -30,6 +30,8 @@ export interface SocialAdapter {
   uploadImage(req: UploadImageRequest): Promise<string>;
   /** Поиск ранее опубликованного материала для разрешения publication_unknown. null = проверить невозможно. */
   findPublication(req: { authorUrn: string; accessToken: string; idempotencyKey: string; bodyPrefix: string }): Promise<PublishResult | "not_found" | null>;
+  /** Организации, которые пользователь токена администрирует (organizationAcls, роль ADMINISTRATOR, статус APPROVED). */
+  listAdministeredOrganizations(req: { accessToken: string; apiVersion: string }): Promise<string[]>;
 }
 
 /** Реальный адаптер Posts API. Вызывается только при capability mode=api. */
@@ -103,11 +105,36 @@ export class LinkedInHttpAdapter implements SocialAdapter {
     return v.image as string;
   }
 
+  async listAdministeredOrganizations(req: { accessToken: string; apiVersion: string }): Promise<string[]> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/rest/organizationAcls?q=roleAssignee&role=ADMINISTRATOR&state=APPROVED`, {
+        headers: { Authorization: `Bearer ${req.accessToken}`, "LinkedIn-Version": req.apiVersion, "X-Restli-Protocol-Version": "2.0.0" },
+      });
+    } catch {
+      throw new IntegrationError("retryable", "network", "Не удалось получить список администрируемых страниц");
+    }
+    if (res.status === 401) throw new IntegrationError("auth", "unauthorized", "Токен недействителен или отозван");
+    if (res.status === 403) throw new IntegrationError("permanent", "forbidden", "Нет разрешения на чтение ролей организации");
+    if (!res.ok) throw new IntegrationError(res.status >= 500 ? "retryable" : "permanent", `acl_${res.status}`, "Ошибка запроса ролей организации");
+    return parseOrganizationAcls(await res.json());
+  }
+
   async findPublication(): Promise<null> {
     // Чтение собственных публикаций требует r_member_social (ограниченный доступ).
     // Пока доступ не подтверждён, автоматическая проверка невозможна → задача человеку.
     return null;
   }
+}
+
+/** Ответ organizationAcls → список URN организаций (дубли и некорректные значения отбрасываются). */
+export function parseOrganizationAcls(json: any): string[] {
+  const out = new Set<string>();
+  for (const e of json?.elements ?? []) {
+    const org = e?.organization ?? e?.organizationTarget;
+    if (typeof org === "string" && /^urn:li:organization:\d+$/.test(org) && (e.role ?? "ADMINISTRATOR") === "ADMINISTRATOR" && (e.state ?? "APPROVED") === "APPROVED") out.add(org);
+  }
+  return [...out];
 }
 
 /** Тело content для Posts API: одно изображение или несколько. */
@@ -162,6 +189,8 @@ export class DemoLinkedInAdapter implements SocialAdapter {
     return `urn:li:image:demo-${this.uploads}`;
   }
   lastPublish: PublishRequest | null = null;
+  organizations: string[] = [];
+  async listAdministeredOrganizations() { return this.organizations; }
   async findPublication(req: { idempotencyKey: string }) {
     const p = this.posts.get(req.idempotencyKey);
     return p ? { externalId: p.externalId, url: p.url } : "not_found" as const;

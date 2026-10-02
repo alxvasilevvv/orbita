@@ -77,7 +77,7 @@ export const money = (v: number | null | undefined) => v == null ? "–" : new I
 export const num = (v: number | null | undefined, digits = 0) => v == null ? "–" : new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: digits }).format(v);
 
 /** Текущий пользователь и его агентские права для показа кнопок. Проверки всё равно выполняет сервер. */
-export type Me = { id: string; display_name: string; roles: string[]; agency_wide: boolean; client_only: boolean; locale: "ru" | "en"; agency_ops: string[] };
+export type Me = { id: string; display_name: string; roles: string[]; agency_wide: boolean; client_only: boolean; auditor_only?: boolean; internal?: boolean; locale: "ru" | "en"; agency_ops: string[] };
 export const MeCtx = createContext<Me | null>(null);
 export function useMe() { return useContext(MeCtx); }
 

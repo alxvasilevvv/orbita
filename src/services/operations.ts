@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { accountScope, audit, NotFoundError, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
+import { accountScope, audit, ConflictError, isInternal, NotFoundError, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
 import { aggregate, interactionRateByImpressions, type MetricValue } from "../core/metrics";
 import { capacityCheck, taskPriority } from "../core/heuristics";
-import { agencyWide, can } from "../core/permissions";
+import { agencyWide, can, ForbiddenError } from "../core/permissions";
 
 export async function agencyOverview(ctx: Ctx) {
   const vis = visibleAccountsFilter(ctx, "a", 2);
@@ -198,18 +198,35 @@ export async function addOpportunity(ctx: Ctx, accountId: string, input: unknown
 export async function logTime(ctx: Ctx, accountId: string, input: unknown) {
   const a = await accountScope(ctx.db, ctx, accountId);
   requireOp(ctx, "view", { clientId: a.client_id, accountId });
+  if (!isInternal(ctx, { clientId: a.client_id, accountId })) throw new ForbiddenError("view", "Учёт времени ведёт только команда агентства");
   const d = z.object({ minutes: z.number().int().positive().max(24 * 60), work_date: z.string(), task_id: z.string().uuid().optional() }).parse(input);
   return (await ctx.db.query("INSERT INTO time_entries(client_id, account_id, user_id, task_id, minutes, work_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [a.client_id, accountId, ctx.actor.id, d.task_id ?? null, d.minutes, d.work_date])).rows[0];
 }
 
 export async function listUsers(ctx: Ctx) {
-  return (await ctx.db.query(`SELECT u.id, u.display_name, u.email, array_agg(DISTINCT m.role) AS roles FROM users u JOIN memberships m ON m.user_id = u.id AND m.revoked_at IS NULL WHERE u.agency_id = $1 AND u.is_active GROUP BY u.id ORDER BY u.display_name`, [ctx.actor.agency_id])).rows;
+  // Справочник сотрудников только для внутренних ролей; адреса почты видит только управляющий командой.
+  if (!isInternal(ctx)) throw new ForbiddenError("view", "Справочник сотрудников доступен только команде агентства");
+  const emails = can(ctx.actor.memberships, "manage_team", {});
+  return (await ctx.db.query(`SELECT u.id, u.display_name, ${emails ? "u.email" : "NULL::text AS email"}, array_agg(DISTINCT m.role) AS roles FROM users u JOIN memberships m ON m.user_id = u.id AND m.revoked_at IS NULL WHERE u.agency_id = $1 AND u.is_active GROUP BY u.id ORDER BY u.display_name`, [ctx.actor.agency_id])).rows;
 }
 
 /** Отзыв доступа при увольнении. */
 export async function offboardUser(ctx: Ctx, userId: string) {
   requireOp(ctx, "manage_team", {});
+  if (userId === ctx.actor.id) throw new ValidationError("Нельзя отключить собственную учётную запись");
   return ctx.db.tx(async (q) => {
+    const target = (await q.query(
+      `SELECT u.id, EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id AND m.role = 'owner' AND m.revoked_at IS NULL) AS is_owner
+         FROM users u WHERE u.id = $1 AND u.agency_id = $2 AND u.is_active`, [userId, ctx.actor.agency_id])).rows[0];
+    if (!target) throw new NotFoundError("Пользователь не найден");
+    if (target.is_owner) {
+      // Владельца отключает только владелец, и в агентстве должен остаться хотя бы один активный владелец.
+      if (!ctx.actor.memberships.some((m) => m.role === "owner" && !m.scope_client_id && !m.scope_account_id)) throw new ForbiddenError("manage_team", "Отключить владельца может только владелец");
+      const others = (await q.query(
+        `SELECT count(DISTINCT m.user_id)::int AS n FROM memberships m JOIN users u ON u.id = m.user_id
+          WHERE u.agency_id = $1 AND u.is_active AND m.role = 'owner' AND m.revoked_at IS NULL AND m.user_id <> $2`, [ctx.actor.agency_id, userId])).rows[0].n;
+      if (!others) throw new ConflictError("Нельзя отключить последнего владельца агентства");
+    }
     await q.query("UPDATE memberships SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [userId]);
     await q.query("UPDATE users SET is_active = false WHERE id = $1 AND agency_id = $2", [userId, ctx.actor.agency_id]);
     const t = await q.query("UPDATE tasks SET assignee_id = NULL WHERE assignee_id = $1 AND status IN ('open','in_progress','blocked') RETURNING id", [userId]);

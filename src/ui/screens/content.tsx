@@ -16,7 +16,7 @@ export function ContentPage({ id }: { id: string }) {
   const [url, setUrl] = useState("");
   const [media, setMedia] = useState<string[] | null>(null);
   const [review, setReview] = useState<any | null>(null);
-  const acc = useApiAccount(s.data?.item?.account_id);
+  const acc = useApiAccount(me.data?.internal ? s.data?.item?.account_id : undefined);
   return (
     <Loadable s={s}>{(d) => {
       const it = d.item; const cur = d.versions[0]; const text = body ?? cur?.body ?? "";

@@ -190,6 +190,23 @@ export function AccHistory({ d }: { d: any }) {
   );
 }
 
+/** Ожидаемая идентичность LinkedIn: от чьего имени разрешено публиковать. */
+function Identity({ d, can, reload }: { d: any; can: boolean; reload: () => void }) {
+  const { busy, run } = useAction();
+  const org = d.account.kind === "company_page";
+  const [v, setV] = useState(d.account.linkedin_urn ?? "");
+  return (
+    <div className="small" style={{ margin: "8px 0" }}>
+      <b>{org ? t("Организация LinkedIn") : t("Профиль LinkedIn")}:</b> {d.account.linkedin_urn ? <code>{d.account.linkedin_urn}</code> : <span className="muted">{t("не определён")}</span>}
+      <div className="muted">{org ? t("Страница компании публикует только от имени этой организации; подключающий должен быть её администратором.") : t("Публикация разрешена только от имени этого профиля; подключение другого человека отклоняется.")}</div>
+      {can && <div className="row" style={{ marginTop: 6 }}>
+        <input type="text" value={v} placeholder={org ? "urn:li:organization:123456" : "urn:li:person:…"} onChange={(e) => setV(e.target.value)} style={{ minWidth: 280 }} aria-label={org ? t("Организация LinkedIn") : t("Профиль LinkedIn")} />
+        <button className="btn" disabled={busy || v === (d.account.linkedin_urn ?? "")} onClick={() => run(() => api(`/api/accounts/${d.account.id}/identity`, { method: "PATCH", body: { linkedin_urn: v.trim() || null } }), "Идентичность сохранена", reload)}>{t("Сохранить")}</button>
+      </div>}
+    </div>
+  );
+}
+
 export function AccSettings({ d, reload }: { d: any; reload: () => void }) {
   const { busy, run } = useAction();
   const can = (op: string) => d.permissions.includes(op);
@@ -203,6 +220,7 @@ export function AccSettings({ d, reload }: { d: any; reload: () => void }) {
           {can("manage_connection") && d.connection && d.connection.status !== "revoked" && <button className="btn danger" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/connection/revoke`, { body: {} }), "Подключение отмечено отозванным", reload)}>{t("Отметить отзыв доступа")}</button>}
         </div></div>
         <p className="small">{d.connection ? `${t("Статус")}: ${d.connection.status}. ${t("Разрешения")}: ${d.connection.granted_scopes.join(" ") || t("нет")}.` : t("Аккаунт не подключён. Платформа работает через assisted-процессы: готовит материал, человек выполняет действие и вносит результат.")}</p>
+        <Identity d={d} can={can("manage_connection")} reload={reload} />
         <table><thead><tr><th>{t("Операция")}</th><th>{t("Режим")}</th><th>{t("Почему")}</th><th>{t("Альтернатива")}</th><th>{t("Проверено")}</th></tr></thead><tbody>
           {d.capabilities.map((c: any) => <tr key={c.operation}><td>{t(c.label)}</td><td><span className={`mode ${c.mode}`}>{t(MODE_RU[c.mode])}</span></td><td className="small">{tx(c.unavailable_reason ?? c.access_basis)}</td><td className="small">{c.mode === "api" ? "–" : t(c.alternative)}</td><td className="small num">{fmt(c.checked_at)}<div className="muted">{c.source}</div></td></tr>)}
         </tbody></table>
@@ -211,7 +229,7 @@ export function AccSettings({ d, reload }: { d: any; reload: () => void }) {
         <h3>{t("Согласия владельца")}</h3>
         <p className="muted small">{t("Договор с компанией не даёт согласия за сотрудника. Отзыв согласия на публикацию отменяет все ещё не отправленные публикации.")}</p>
         <table><thead><tr><th>{t("Вид действий")}</th><th>{t("Кто дал")}</th><th>{t("Основание")}</th><th>{t("Статус")}</th><th /></tr></thead><tbody>
-          {d.consents.map((c: any) => <tr key={c.id}><td>{t(SCOPE_RU[c.action_scope] ?? c.action_scope)}</td><td>{c.granted_by_name}</td><td className="small">{c.evidence_ref}</td><td>{c.revoked_at ? `отозвано ${fmt(c.revoked_at)}` : t("действует")}</td><td>{!c.revoked_at && can("manage_consent") && <button className="btn danger" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/consents/${c.action_scope}/revoke`, { body: {} }), "Согласие отозвано", reload)}>{t("Отозвать")}</button>}</td></tr>)}
+          {d.consents.map((c: any) => <tr key={c.id}><td>{t(SCOPE_RU[c.action_scope] ?? c.action_scope)}</td><td>{c.granted_by_name}</td><td className="small">{c.evidence_ref}</td><td>{c.revoked_at ? `${t("отозвано")} ${fmt(c.revoked_at)}` : t("действует")}</td><td>{!c.revoked_at && can("manage_consent") && <button className="btn danger" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/consents/${c.action_scope}/revoke`, { body: {} }), "Согласие отозвано", reload)}>{t("Отозвать")}</button>}</td></tr>)}
         </tbody></table>
       </div>
       {can("publish") && <div className="panel row">

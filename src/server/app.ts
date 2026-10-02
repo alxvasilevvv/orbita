@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { ZodError, z } from "zod";
 import type { Db } from "../db/db";
-import { accountScope, actorCtx, loadActor, requireOp, type Ctx } from "../services/context";
+import { accountScope, actorCtx, isInternal, loadActor, requireOp, type Ctx } from "../services/context";
 import * as acc from "../services/accounts";
 import * as content from "../services/content";
 import * as pub from "../services/publishing";
@@ -30,9 +30,24 @@ import { allowedOperations, agencyWide } from "../core/permissions";
 import { DemoAiProvider, type AiProvider } from "../ai/guard";
 import { LocalStorage, type Storage } from "../services/storage";
 import { SignatureScanner, type MalwareScanner, MEDIA_LIMITS } from "../services/media";
+import { LinkedInHttpAdapter } from "../integrations/linkedin/adapter";
 import type { SecretStoreFull } from "../runtime";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+/** Маршруты, доступные пользователям без роли агентства. Всё остальное для них закрыто (403). */
+const CLIENT_ROUTES = new Set([
+  "GET /api/me", "PATCH /api/me", "GET /api/meta", "GET /api/portal", "GET /api/portal/accounts/:id",
+  "GET /api/content/:id", "POST /api/content/:id/decision", "GET /api/reports/:id", "GET /api/media/:id/url",
+  "POST /api/accounts/:id/consents", "POST /api/accounts/:id/consents/:scope/revoke",
+  "GET /api/notifications", "POST /api/notifications/read", "POST /api/engagement/:id/decision",
+]);
+const AUDITOR_ROUTES = new Set(["GET /api/me", "PATCH /api/me", "GET /api/meta", "GET /api/audit", "GET /api/notifications", "POST /api/notifications/read"]);
+function externalRouteAllowed(ctx: Ctx, method: string, url: string) {
+  const key = `${method} ${url}`;
+  const roles = new Set(ctx.actor.memberships.map((m) => m.role));
+  return (roles.has("client") && CLIENT_ROUTES.has(key)) || (roles.has("auditor") && AUDITOR_ROUTES.has(key));
+}
 
 export interface AppDeps {
   db: Db;
@@ -100,7 +115,15 @@ export function buildApp(deps: AppDeps) {
   }
   type Req<P> = FastifyRequest<{ Params: P; Body: any; Querystring: Record<string, string | undefined> }>;
   const h = <P = any>(fn: (ctx: Ctx, req: Req<P>, reply: FastifyReply) => Promise<unknown>) =>
-    async (req: FastifyRequest<any>, reply: FastifyReply) => fn(await ctxOf(req), req as Req<P>, reply);
+    async (req: FastifyRequest<any>, reply: FastifyReply) => {
+      const ctx = await ctxOf(req);
+      // Представитель клиента и аудитор видят только разрешённые им маршруты: внутренние экраны закрыты целиком,
+      // а не только отфильтрованы. Это второй рубеж после RLS и проверок операций в сервисах.
+      if (!isInternal(ctx) && !externalRouteAllowed(ctx, req.method, req.routeOptions.url ?? "")) {
+        throw Object.assign(new Error("Раздел доступен только команде агентства"), { status: 403 });
+      }
+      return fn(ctx, req as Req<P>, reply);
+    };
 
   // Статика UI
   const asset = (file: string, type: string) => async (_r: FastifyRequest, reply: FastifyReply) => reply.type(type).header("Cache-Control", "no-cache").send(await readFile(join(here, "../../public", file)));
@@ -132,8 +155,9 @@ export function buildApp(deps: AppDeps) {
 
   app.get("/api/me", h(async (ctx) => {
     const u = (await deps.db.query("SELECT locale FROM users WHERE id = $1", [ctx.actor.id])).rows[0];
-    const internal = ctx.actor.memberships.some((m) => m.role !== "client");
-    return { id: ctx.actor.id, display_name: ctx.actor.display_name, agency_id: ctx.actor.agency_id, roles: [...new Set(ctx.actor.memberships.map((m) => m.role))], agency_wide: agencyWide(ctx.actor.memberships), client_only: !internal, locale: u?.locale ?? "ru", agency_ops: [...allowedOperations(ctx.actor.memberships, {})] };
+    const internal = isInternal(ctx);
+    const roles = new Set(ctx.actor.memberships.map((m) => m.role));
+    return { id: ctx.actor.id, display_name: ctx.actor.display_name, agency_id: ctx.actor.agency_id, roles: [...roles], agency_wide: agencyWide(ctx.actor.memberships), internal, client_only: !internal && roles.has("client"), auditor_only: !internal && !roles.has("client") && roles.has("auditor"), locale: u?.locale ?? "ru", agency_ops: [...allowedOperations(ctx.actor.memberships, {})] };
   }));
   app.patch("/api/me", h(async (ctx, req) => {
     const d = z.object({ locale: z.enum(["ru", "en"]) }).parse(req.body);
@@ -148,7 +172,11 @@ export function buildApp(deps: AppDeps) {
 
   // Обзор, клиенты, аккаунты
   app.get("/api/overview", h(async (ctx) => ops.agencyOverview(ctx)));
-  app.get("/api/clients", h(async (ctx) => (await ctx.db.query("SELECT id, name, status, monthly_fee, ai_budget_usd_month, approval_sla_hours FROM clients WHERE agency_id = $1 ORDER BY name", [ctx.actor.agency_id])).rows));
+  app.get("/api/clients", h(async (ctx) => {
+    // Абонентская плата видна только тем, кому доступны финансы.
+    const fee = allowedOperations(ctx.actor.memberships, {}).has("view_finance") ? "monthly_fee" : "NULL::numeric AS monthly_fee";
+    return (await ctx.db.query(`SELECT id, name, status, ${fee}, ai_budget_usd_month, approval_sla_hours FROM clients WHERE agency_id = $1 ORDER BY name`, [ctx.actor.agency_id])).rows;
+  }));
   app.post("/api/clients", h(async (ctx, req) => acc.createClient(ctx, req.body)));
   app.patch("/api/clients/:id", h<{ id: string }>(async (ctx, req) => {
     requireOp(ctx, "manage_clients", { clientId: req.params.id });
@@ -167,6 +195,7 @@ export function buildApp(deps: AppDeps) {
   app.post("/api/accounts/:id/capabilities/refresh", h<{ id: string }>(async (ctx, req) => acc.refreshCapabilities(ctx, req.params.id)));
   app.post("/api/accounts/:id/consents", h<{ id: string }>(async (ctx, req) => acc.grantConsent(ctx, req.params.id, req.body)));
   app.post("/api/accounts/:id/consents/:scope/revoke", h<{ id: string; scope: string }>(async (ctx, req) => acc.revokeConsent(ctx, req.params.id, req.params.scope)));
+  app.patch("/api/accounts/:id/identity", h<{ id: string }>(async (ctx, req) => acc.setLinkedInIdentity(ctx, req.params.id, req.body)));
   app.post("/api/accounts/:id/connection/revoke", h<{ id: string }>(async (ctx, req) => acc.markConnectionRevoked(ctx, req.params.id)));
   app.post("/api/accounts/:id/strategies", h<{ id: string }>(async (ctx, req) => acc.createStrategyVersion(ctx, req.params.id, req.body)));
   app.post("/api/accounts/:id/strategies/:sid/approve", h<{ id: string; sid: string }>(async (ctx, req) => acc.approveStrategy(ctx, req.params.id, req.params.sid)));
@@ -297,7 +326,18 @@ export function buildApp(deps: AppDeps) {
     await deps.secrets.set(ref, t.access_token);
     const actor = await loadActor(deps.db, st.userId);
     if (!actor) return reply.status(401).send("Пользователь отключён");
-    await acc.recordOAuthConnection(actorCtx(deps.db, actor), st.accountId, { external_subject: `urn:li:person:${info.sub}`, granted_scopes: String(t.scope ?? "").split(/[ ,]/).filter(Boolean), secret_ref: ref, expires_at: new Date(Date.now() + (t.expires_in ?? 0) * 1000).toISOString() });
+    if (!info?.sub) return reply.status(502).send("LinkedIn не вернул идентификатор пользователя");
+    // Страница компании: публикация только от имени организации, которую пользователь администрирует.
+    const kind = (await deps.db.query("SELECT kind FROM managed_accounts WHERE id = $1", [st.accountId])).rows[0]?.kind;
+    const organization_urns = kind === "company_page"
+      ? await new LinkedInHttpAdapter().listAdministeredOrganizations({ accessToken: t.access_token, apiVersion: process.env.LINKEDIN_API_VERSION ?? "202608" }).catch(() => [])
+      : undefined;
+    try {
+      await acc.recordOAuthConnection(actorCtx(deps.db, actor), st.accountId, { organization_urns, external_subject: `urn:li:person:${info.sub}`, granted_scopes: String(t.scope ?? "").split(/[ ,]/).filter(Boolean), secret_ref: ref, expires_at: new Date(Date.now() + (t.expires_in ?? 0) * 1000).toISOString() });
+    } catch (e: any) {
+      if (deps.secrets.delete) await deps.secrets.delete(ref);
+      return reply.status(e?.status ?? 500).send(e?.message ?? "Не удалось сохранить подключение");
+    }
     return reply.redirect(`/#/accounts/${st.accountId}`);
   });
 

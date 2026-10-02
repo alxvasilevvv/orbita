@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { accountScope, audit, emit, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
+import { accountScope, audit, ConflictError, emit, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
 import { appAccessFromEnv, CAPABILITY_CATALOG, resolveCapabilities, type AccountKind } from "../core/capabilities";
 import { isValidTimeZone } from "../core/time";
+import { cancelPendingJobs } from "./jobs";
 import { STRATEGY_TEMPLATES } from "../core/templates";
 
 export async function listAccounts(ctx: Ctx, filter: { q?: string; attention?: boolean; limit?: number; offset?: number } = {}) {
@@ -134,8 +135,7 @@ export async function revokeConsent(ctx: Ctx, accountId: string, scope: string) 
     await q.query("UPDATE consents SET revoked_at = now() WHERE account_id = $1 AND action_scope = $2 AND revoked_at IS NULL", [accountId, scope]);
     let cancelled = 0;
     if (scope === "publish_post") {
-      const r = await q.query("UPDATE publication_jobs SET status = 'cancelled', last_error_code = 'consent_revoked', updated_at = now() WHERE account_id = $1 AND status IN ('queued') RETURNING id", [accountId]);
-      cancelled = r.rows.length;
+      cancelled = (await cancelPendingJobs(q, { accountId }, "consent_revoked", { resetScheduled: true })).length;
     }
     await audit(q, ctx, { action: "consent.revoked", entity_type: "consent", client_id: a.client_id, account_id: accountId, details: { scope, cancelled_jobs: cancelled } });
     await emit(q, "consent.revoked", a.client_id, { account_id: accountId, scope });
@@ -148,17 +148,47 @@ export async function hasConsent(q: { query: Ctx["db"]["query"] }, accountId: st
 }
 
 /** Подключение OAuth. Токен уже сохранён в менеджере секретов; здесь только ссылка. */
-export async function recordOAuthConnection(ctx: Ctx, accountId: string, input: { external_subject: string; granted_scopes: string[]; secret_ref: string; expires_at?: string }) {
+export async function recordOAuthConnection(ctx: Ctx, accountId: string, input: { external_subject: string; granted_scopes: string[]; secret_ref: string; expires_at?: string; organization_urns?: string[] }) {
   const a = await accountScope(ctx.db, ctx, accountId);
   requireOp(ctx, "manage_connection", { clientId: a.client_id, accountId });
   return ctx.db.tx(async (q) => {
+    // Идентичность: личный профиль публикует от имени человека, страница компании только от имени организации,
+    // которую подключивший пользователь администрирует (organizationAcls). Чужой профиль не принимается.
+    if (!/^urn:li:person:.+/.test(input.external_subject)) throw new ValidationError("Ожидается идентификатор участника LinkedIn (urn:li:person)");
+    const expected = (await q.query("SELECT linkedin_urn FROM managed_accounts WHERE id = $1", [accountId])).rows[0]?.linkedin_urn as string | null;
+    let identity: string;
+    if (a.kind === "company_page") {
+      const orgs = (input.organization_urns ?? []).filter((o) => /^urn:li:organization:\d+$/.test(o));
+      const org = expected ? (orgs.includes(expected) ? expected : null) : orgs.length === 1 ? orgs[0] : null;
+      if (!org) throw new ConflictError(expected
+        ? "Подключивший пользователь не является администратором этой страницы компании в LinkedIn"
+        : orgs.length > 1 ? "Пользователь администрирует несколько страниц: укажите URN организации в карточке аккаунта и подключите снова" : "Пользователь не администрирует ни одной страницы компании в LinkedIn");
+      identity = org;
+    } else {
+      if (expected && expected !== input.external_subject) throw new ConflictError("Подключён другой профиль LinkedIn: войдите под учётной записью владельца аккаунта");
+      identity = input.external_subject;
+    }
+    await q.query("UPDATE managed_accounts SET linkedin_urn = $2 WHERE id = $1", [accountId, identity]);
     await q.query("UPDATE oauth_connections SET status = 'revoked', updated_at = now() WHERE account_id = $1 AND status IN ('active','expiring')", [accountId]);
     const c = (await q.query(
       "INSERT INTO oauth_connections(client_id, account_id, external_subject, granted_scopes, secret_ref, expires_at, status, connected_by) VALUES ($1,$2,$3,$4,$5,$6,'active',$7) RETURNING id, status, granted_scopes, expires_at",
       [a.client_id, accountId, input.external_subject, input.granted_scopes, input.secret_ref, input.expires_at ?? null, ctx.actor.id])).rows[0];
     const caps = await writeCapabilities(q, accountId, a.client_id, a.kind as AccountKind, "active", input.granted_scopes, "oauth_connected");
-    await audit(q, ctx, { action: "connection.created", entity_type: "oauth_connection", entity_id: c.id, client_id: a.client_id, account_id: accountId, details: { scopes: input.granted_scopes } });
-    return { connection: c, capabilities: caps };
+    await audit(q, ctx, { action: "connection.created", entity_type: "oauth_connection", entity_id: c.id, client_id: a.client_id, account_id: accountId, details: { scopes: input.granted_scopes, identity } });
+    return { connection: c, capabilities: caps, identity };
+  });
+}
+
+/** Ожидаемая идентичность LinkedIn: URN организации для страницы компании или участника для личного профиля. */
+export async function setLinkedInIdentity(ctx: Ctx, accountId: string, input: unknown) {
+  const a = await accountScope(ctx.db, ctx, accountId);
+  requireOp(ctx, "manage_connection", { clientId: a.client_id, accountId });
+  const re = a.kind === "company_page" ? /^urn:li:organization:\d+$/ : /^urn:li:person:[A-Za-z0-9_-]+$/;
+  const d = z.object({ linkedin_urn: z.string().regex(re, a.kind === "company_page" ? "Ожидается urn:li:organization:<число>" : "Ожидается urn:li:person:<id>").nullable() }).parse(input);
+  return ctx.db.tx(async (q) => {
+    await q.query("UPDATE managed_accounts SET linkedin_urn = $2 WHERE id = $1", [accountId, d.linkedin_urn]);
+    await audit(q, ctx, { action: "account.identity_set", entity_type: "managed_account", entity_id: accountId, client_id: a.client_id, account_id: accountId, details: { linkedin_urn: d.linkedin_urn } });
+    return { linkedin_urn: d.linkedin_urn };
   });
 }
 

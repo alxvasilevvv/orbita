@@ -37,8 +37,9 @@ export function ctr(m: { clicks: number | null; impressions: number | null; comp
 }
 
 /**
- * Агрегирует значения за период. Периодические значения суммируются;
- * для накопительных берётся последний снимок; null не превращается в 0.
+ * Агрегирует значения за период. Периодические значения суммируются только при явных
+ * непересекающихся периодах; иначе повторные снимки одной величины дали бы двойной счёт,
+ * поэтому берётся последний снимок. Для накопительных всегда последний снимок; null не превращается в 0.
  */
 export function aggregate(values: MetricValue[]): { value: number | null; completeness: number; note: string } {
   if (values.length === 0) return { value: null, completeness: 0, note: "Нет данных" };
@@ -57,8 +58,22 @@ export function aggregate(values: MetricValue[]): { value: number | null; comple
   if (values[0].metric_key === "unique_reach") {
     return { value: null, completeness, note: "Уникальный охват разных публикаций не суммируется" };
   }
+  if (!periodsDisjoint(available)) {
+    const latest = [...available].sort((a, b) => +new Date(b.observed_at) - +new Date(a.observed_at))[0];
+    return { value: latest.value, completeness, note: "Периоды не заданы или пересекаются: взят последний снимок, сумма не рассчитывается" };
+  }
   const sum = available.reduce((s, v) => s + (v.value as number), 0);
   return { value: sum, completeness, note: completeness < 1 ? "Сумма по доступным периодам, данные неполные" : "Сумма за период" };
+}
+
+/** Все значения имеют явный период [start, end) и периоды не пересекаются. Одно значение суммировать не с чем. */
+export function periodsDisjoint(values: Pick<MetricValue, "period_start" | "period_end">[]): boolean {
+  if (values.length <= 1) return true;
+  const ps = values.map((v) => ({ s: v.period_start ? +new Date(v.period_start) : NaN, e: v.period_end ? +new Date(v.period_end) : NaN }));
+  if (ps.some((p) => !Number.isFinite(p.s) || !Number.isFinite(p.e) || p.e <= p.s)) return false;
+  ps.sort((a, b) => a.s - b.s);
+  for (let i = 1; i < ps.length; i++) if (ps[i].s < ps[i - 1].e) return false;
+  return true;
 }
 
 export function median(xs: number[]): number | null {

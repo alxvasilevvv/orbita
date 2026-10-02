@@ -203,7 +203,7 @@ describe("публикация", () => {
     const a2 = await env.acct("Northwind Robotics (страница)");
     process.env.LINKEDIN_APPROVED_PRODUCTS = APPROVED + ",Community Management API";
     env.secrets.set("tok:a2", "token2");
-    await acc.recordOAuthConnection(await env.ctx("manager"), a2.id, { external_subject: "urn:li:organization:9", granted_scopes: ["w_organization_social"], secret_ref: "tok:a2" });
+    await acc.recordOAuthConnection(await env.ctx("manager"), a2.id, { external_subject: "urn:li:person:admin9", organization_urns: ["urn:li:organization:9"], granted_scopes: ["w_organization_social"], secret_ref: "tok:a2" });
     const author = await env.ctx("author");
     const it2 = await content.createContentItem(author, a2.id, { title: "Org", body: "Новость компании" });
     await content.submitForReview(author, it2.id);

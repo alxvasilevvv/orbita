@@ -177,7 +177,8 @@ export async function saveWorkflow(ctx: Ctx, input: unknown) {
   if (d.client_id) requireOp(ctx, "manage_clients", { clientId: d.client_id });
   return ctx.db.tx(async (q) => {
     const v = (await q.query("SELECT coalesce(max(version),0)+1 AS v FROM workflow_definitions WHERE agency_id = $1 AND key = $2", [ctx.actor.agency_id, d.key])).rows[0].v;
-    await q.query("UPDATE workflow_definitions SET enabled = false WHERE agency_id = $1 AND key = $2", [ctx.actor.agency_id, d.key]);
+    // Новая версия заменяет только процесс той же области: общий процесс агентства и процесс клиента с тем же ключом независимы.
+    await q.query("UPDATE workflow_definitions SET enabled = false WHERE agency_id = $1 AND key = $2 AND client_id IS NOT DISTINCT FROM $3::uuid", [ctx.actor.agency_id, d.key, d.client_id ?? null]);
     const w = (await q.query(
       `INSERT INTO workflow_definitions(agency_id, client_id, key, name, owner_id, version, trigger, conditions, actions, max_runs_per_day, enabled)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,

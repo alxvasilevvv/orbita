@@ -29,17 +29,27 @@ src/
   ai/              ограждения AI: изоляция контекста, внешний текст как данные, схема вывода
   integrations/    единый контракт SocialAdapter; LinkedInHttpAdapter и DemoLinkedInAdapter
   services/        сценарии с проверкой прав на сервере и транзакциями
-    accounts.ts    Clients & Accounts, Consent, Integrations & Capabilities, Strategy & Knowledge
+    accounts.ts    Clients & Accounts, Consent, Integrations & Capabilities, идентичность LinkedIn, Strategy & Knowledge
     content.ts     Content, Approvals, AI-черновик
     publishing.ts  Publishing: очередь, исполнитель, unknown, assisted, аварийная пауза
-    operations.ts  Tasks, Analytics & Reports, Opportunities, Team, Audit
+    jobs.ts        отмена неотправленных заданий и связанных задач
+    media.ts       медиатека, проверка файлов; storage.ts: локальное хранилище или S3
+    calendar.ts    месячный план, окна публикации, календарь агентства
+    engagement.ts  Engagement и Opportunities
+    workflows.ts   конструктор сценариев; events.ts: outbox и плановые проверки; notify.ts: уведомления
+    ai.ts, insights.ts  AI-роли, оценка качества, еженедельные инсайты и эксперименты
+    reports.ts     ежемесячный отчёт клиенту, отчёт руководителю агентства
+    operations.ts  Tasks, метрики, еженедельный отчёт, учёт времени, Team, Audit
+    team.ts        команда, роли, ёмкость, инциденты
+    portal.ts      кабинет клиента
+    exports.ts, lifecycle.ts  выгрузки, завершение обслуживания, удаление данных, сроки хранения
   server/          HTTP API (Fastify), OAuth LinkedIn
   worker/          отдельный процесс исполнителя
   ui/              React SPA
 migrations/        SQL-миграции
 ```
 
-Соответствие 14 модулям промпта: Identity & Access (`permissions.ts`, `context.ts`), Clients & Accounts, Integrations & Capabilities, Strategy & Knowledge (`accounts.ts`), Content & Assets, Approvals (`content.ts`), Publishing (`publishing.ts`), Tasks & Workflows, Analytics & Reports, Opportunities, Team Operations (`operations.ts`), Engagement (каркас: эвристика и таблицы, UI на этапе 3), AI Orchestration (`ai/`), Audit & Data Lifecycle (`audit_events`, `retention_policies`).
+Соответствие 14 модулям промпта: Identity & Access (`permissions.ts`, `context.ts`), Clients & Accounts, Integrations & Capabilities, Strategy & Knowledge (`accounts.ts`), Content & Assets, Approvals (`content.ts`), Publishing (`publishing.ts`), Tasks & Workflows, Analytics & Reports, Opportunities, Team Operations (`operations.ts`), Engagement (`engagement.ts`), AI Orchestration (`ai/`), Audit & Data Lifecycle (`audit_events`, `retention_policies`).
 
 ## 4. Модель данных
 
@@ -78,6 +88,9 @@ idea → brief → draft → editorial_review → client_review → approved →
 - Выход: `published` с внешним ID и `api_confirmed`.
 - Ошибки: квота/временная → повтор с экспоненциальной задержкой и jitter; постоянная → `failed` + задача; авторизация → подключение `error` + задача переподключения; потеря ответа → `publication_unknown`, проверка доступным способом, иначе задача человеку; исчерпаны попытки → `dead` + инцидент; сбой исполнителя с истёкшей арендой → `unknown`.
 - Действия человека: разрешить неопределённость, переподключить, разобрать ошибку.
+- Идентичность: автор страницы компании только `urn:li:organization:` из `managed_accounts.linkedin_urn` (организация подтверждена через organizationAcls при подключении); автор личного профиля только подключённый владелец. Несоответствие даёт блокировку `identity` без внешнего вызова.
+- Повторное планирование той же версии: задания `cancelled`, `failed`, `dead` и остановленные `awaiting_human` снова ставятся в очередь; `unknown` остаётся до проверки человеком.
+- Отмена: новая версия, отзыв согласия, отмена материала и завершение обслуживания отменяют задания `queued` и `awaiting_human` вместе с задачами ручной публикации.
 - Аудит: каждое изменение состояния, блокировки с кодами.
 - Успех: ровно одна публикация на ключ идемпотентности в нашей системе; во внешней системе exactly-once не обещается.
 
@@ -94,7 +107,7 @@ idea → brief → draft → editorial_review → client_review → approved →
 `priority = 0.40 × urgency + 0.35 × impact + 0.25 × blocker_severity`; `engagement = 0.30 × relevance + 0.25 × audience_fit + 0.25 × contribution_value + 0.20 × timeliness`. Компоненты нормализуются 0–1, веса настраиваются, блокировки дают `score = null`. Назначение сверх ёмкости требует явного подтверждения.
 
 ### 6.6. Аналитика (`metrics.ts`)
-NULL не превращается в 0; накопительные снимки берутся последним значением; охват и показы не смешиваются; уникальный охват не суммируется; interaction rate и CTR возвращают «не рассчитывается» без совместимого знаменателя. Еженедельный пересмотр стратегии (этап 4): медианы по сопоставимым публикациям, явная пометка малых выборок, формулировка «последовательный эксперимент».
+NULL не превращается в 0; накопительные снимки берутся последним значением; периодические значения суммируются только при явных непересекающихся периодах, иначе берётся последний снимок с пояснением; охват и показы не смешиваются; уникальный охват не суммируется; interaction rate и CTR возвращают «не рассчитывается» без совместимого знаменателя. Еженедельный пересмотр стратегии (этап 4): медианы по сопоставимым публикациям, явная пометка малых выборок, формулировка «последовательный эксперимент».
 
 ## 7. Каталог внутреннего API
 
@@ -102,28 +115,43 @@ NULL не превращается в 0; накопительные снимки
 
 | Метод | Путь | Назначение | Идемпотентность |
 |---|---|---|---|
-| GET | /api/overview | Производственная сводка, загрузка, экономика |: |
-| GET | /api/accounts?q&attention&limit&offset | Реестр с причинами внимания (пагинация limit ≤ 500) |: |
-| POST | /api/clients, /api/accounts | Создание клиента и аккаунта |: |
-| GET | /api/accounts/:id | Рабочее пространство аккаунта и разрешённые операции |: |
+| GET | /api/overview | Производственная сводка, загрузка, экономика | – |
+| GET | /api/accounts?q&attention&limit&offset | Реестр с причинами внимания (пагинация limit ≤ 500) | – |
+| POST | /api/clients, /api/accounts | Создание клиента и аккаунта | – |
+| GET | /api/accounts/:id | Рабочее пространство аккаунта и разрешённые операции | – |
 | POST | /api/accounts/:id/capabilities/refresh | Перепроверка возможностей | Да |
 | POST | /api/accounts/:id/consents, /consents/:scope/revoke | Согласия | Отзыв да |
 | POST | /api/accounts/:id/connection/revoke | Отзыв подключения, остановка заданий | Да |
+| PATCH | /api/accounts/:id/identity | Ожидаемый URN профиля или организации | Да |
 | GET | /api/accounts/:id/oauth/start, /oauth/linkedin/callback | OAuth LinkedIn с `state` | state одноразовый |
-| POST | /api/accounts/:id/strategies, /strategies/:sid/approve | Версии стратегии |: |
-| POST | /api/accounts/:id/knowledge | Источник и подтверждённые факты |: |
-| POST | /api/accounts/:id/content | Новый материал |: |
+| POST | /api/accounts/:id/strategies, /strategies/:sid/approve | Версии стратегии | – |
+| POST | /api/accounts/:id/knowledge | Источник и подтверждённые факты | – |
+| POST | /api/accounts/:id/content | Новый материал | – |
 | POST | /api/content/:id/versions | Новая версия (`expected_row_version` для оптимистичной блокировки) | Одинаковый текст не создаёт версию |
-| POST | /api/content/:id/ai-draft | AI-черновик |: |
+| POST | /api/content/:id/ai-draft | AI-черновик | – |
 | POST | /api/content/:id/submit, /decision | Согласование конкретной версии | `approval_request_id` защищает от устаревших решений |
 | POST | /api/content/:id/schedule | Планирование (`local_time`, `ambiguity`) | Ключ задания на версию |
 | POST | /api/content/:id/mark-published, /resolve-unknown | Ручная отметка и разрешение неопределённости | Да |
-| GET/PATCH | /api/tasks, /api/tasks/:id | Задачи с приоритетом и проверкой ёмкости |: |
+| GET/PATCH | /api/tasks, /api/tasks/:id | Задачи с приоритетом и проверкой ёмкости | – |
 | POST | /api/bulk/tasks | Массовые задачи, `dry_run` показывает состав | Результат по каждому аккаунту |
 | POST | /api/accounts/:id/metrics | Импорт метрик с источником | `import_batch_key` |
-| POST | /api/accounts/:id/reports/weekly, GET /api/reports/:id | Отчёт клиенту |: |
+| POST | /api/accounts/:id/reports/weekly, GET /api/reports/:id | Отчёт клиенту | – |
 | POST | /api/publishing/pause | Пауза аккаунта, клиента, агентства | Да |
-| GET | /api/audit | Журнал аудита |: |
+| GET | /api/audit | Журнал аудита | – |
+| GET/POST | /api/accounts/:id/media, /api/media/:id/url | Медиатека и подписанные ссылки | – |
+| GET/POST | /api/calendar, /api/accounts/:id/plan-month, /window-stats | Календарь, месячный план, окна | – |
+| GET/POST | /api/engagement, /api/accounts/:id/engagement, /api/engagement/:id/decision, /executed | Очередь взаимодействий | Согласуется конкретный текст |
+| GET/POST | /api/accounts/:id/opportunities, /api/opportunities/:id/move | Возможности и стадии | – |
+| GET/POST | /api/workflows, /:id/preview, /:id/enabled, /:id/runs | Конструктор сценариев | Ключ события на запуск |
+| GET/POST | /api/accounts/:id/insights, /api/strategy-recommendations/:id/decision, /api/experiments/:id/conclude | Инсайты и эксперименты | – |
+| POST | /api/accounts/:id/reports/monthly, /api/reports/:id/share, GET /api/agency-report | Отчёты клиенту и руководителю | – |
+| GET/POST | /api/team, /api/team/invite, /api/team/roles, /api/users/:id/offboard, /api/incidents | Команда, роли, инциденты | – |
+| GET/POST | /api/exports, /api/exports/:id/download | Выгрузки | – |
+| POST | /api/clients/:id/offboarding, /delete-data | Завершение обслуживания и удаление данных | Подтверждение названием |
+| GET | /api/portal, /api/portal/accounts/:id | Кабинет клиента | – |
+| GET/POST | /api/notifications, /read | Уведомления | – |
+
+Пользователи без роли агентства получают только маршруты из списков `CLIENT_ROUTES` и `AUDITOR_ROUTES` (`src/server/app.ts`), остальные возвращают 403.
 
 ## 8. Модель полномочий AI
 
@@ -137,25 +165,39 @@ NULL не превращается в 0; накопительные снимки
 
 Сделано: проверки на сервере, 404 для чужих объектов, MFA через IdP (production), секреты AES-256-GCM вне логов, редактирование заголовков авторизации в логах, OAuth `state`, аудит чувствительных операций, отзыв доступа при увольнении, пауза публикации на трёх уровнях, отзыв согласия отменяет неотправленные действия, классы данных в `retention_policies`.
 
-Осталось: процедура удаления клиента по всем хранилищам (БД, S3-префикс, кэш, индексы, бэкапы по циклу ротации), подписанные ссылки и антивирус для медиа, Row Level Security в PostgreSQL как второй рубеж изоляции, проверенное восстановление из бэкапа.
+Также сделано: процедура удаления клиента по всем хранилищам с проверкой остатков, подписанные ссылки и антивирус для медиа, проверенное восстановление из бэкапа (`scripts/restore-drill.sh`), RLS как второй рубеж изоляции.
+
+RLS v3 (`migrations/007_rls_accounts.sql`). Каждая транзакция пользователя открывается одним оператором: `set_config` параметров области и переключение на роль `app_user`.
+- `app.client_ids`: клиенты целиком (роли агентства и роли на клиента);
+- `app.account_ids`: аккаунты по роли на аккаунт, соседние аккаунты того же клиента не видны;
+- `app.partial_client_ids`: клиенты этих аккаунтов, только строки уровня клиента;
+- `app.internal`: внутренние таблицы (задачи, время, сценарии, инциденты, аудит профиля, рекомендации, эксперименты) закрыты для клиента и аудитора;
+- `encrypted_secrets` недоступна роли приложения; функции с SECURITY DEFINER фиксируют `search_path` и возвращают только boolean или число.
+
+Независимая проверка и её исправления: `docs/security-review-2026-10.md`.
 
 ## 10. План реализации
 
 | Этап | Содержание | Зависимости | Критерий готовности | Трудозатраты (1 senior + 0,5 дизайнер) |
 |---|---|---|---|---|
-| 0 | Матрица возможностей, бюджет запросов, ADR, прототип одного сценария |: | **Сделано** в этом репозитории |: |
+| 0 | Матрица возможностей, бюджет запросов, ADR, прототип одного сценария | – | **Сделано** в этом репозитории | – |
 | 1 | Ядро: права, клиенты, стратегия, база знаний, контент, согласование, assisted-публикация, задачи, журнал, отчёт | Этап 0 | Вертикальный сценарий **сделан**; осталось: календарь-сетка, клиентский кабинет как отдельный вход, медиа | 3–5 недель на доработку до пилота |
 | 2 | OAuth, реестр возможностей, Posts API, медиа, квоты, переподключение, unknown | Приложение LinkedIn с Share on LinkedIn | Публикация в личный профиль через API на пилотных аккаунтах | 2–4 недели (ожидание одобрения LinkedIn не включено) |
 | 3 | Распределение, SLA, учёт времени, экономика, массовые операции, автоотчёты, конструктор сценариев | Этап 1 | Отчёт руководителю с маржой и перерасходом | 4–6 недель |
 | 4 | AI-роли через AI-шлюз, редакторские проверки, рекомендации, эксперименты | AI-провайдер, согласия | Оценка качества AI на выборке | 4–6 недель |
 | 5 | Нагрузочные тесты, восстановление, проверка изоляции, 2 000 аккаунтов | Этапы 1–3 | Воспроизводимый k6-тест, учения по восстановлению | 2–3 недели |
 
+Состояние на 2026-10-03: этапы 0–5 реализованы в коде и покрыты тестами (см. `docs/status.md`). Вне кода остаются одобрение продуктов LinkedIn, подключение реального AI-провайдера и развёртывание production-контура; оценки трудозатрат выше относятся к доводке до пилота на реальных клиентах.
+
 ## 11. План тестирования
 
 - Модульные (`test/core.test.ts`): DST, метрики, возможности, права, машина состояний, эвристики, AI-ограждения.
 - Интеграционные (`test/flow.test.ts`) на реальном PostgreSQL (PGlite): изоляция через сервисы и HTTP, согласование и его аннулирование, assisted и API-публикация, идемпотентность, параллельные исполнители, потеря ответа, отзыв согласия и подключения, квоты, сбой исполнителя, массовые операции, импорт метрик, отчёт, ёмкость, увольнение, отсутствие текстов в аудите.
-- Контрактные тесты адаптера LinkedIn: на записанных ответах (этап 2). Живой LinkedIn в автотестах не используется.
-- Сквозные: Playwright-сценарий по UI (см. README).
+- RLS (`test/rls.test.ts`, `test/review-fixes.test.ts`): прямой SQL под ролью приложения, покрытие политиками всех таблиц с `client_id`, изоляция аккаунтов и внутренних таблиц.
+- Контрактные (`test/contract-linkedin.test.ts`, разбор organizationAcls в `test/review-fixes.test.ts`): Posts API, Images API, роли организации на записанных ответах (`test/fixtures/linkedin`). Живой LinkedIn в автотестах не используется.
+- Тот же набор запускается на PostgreSQL 16 под ролью без прав суперпользователя (`npm run test:pg`).
+- Сквозные: Playwright (`e2e/flow.mjs`, `e2e/smoke.mjs`) по всем экранам на русском и английском.
+- Нагрузочные: `scripts/loadtest.ts`, результаты в `docs/load-test-results.md`.
 
 ## 12. Эксплуатация и расходы
 

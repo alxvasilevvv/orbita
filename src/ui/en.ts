@@ -1,5 +1,17 @@
 /** Английский словарь интерфейса. Ключ: русская строка. Проверка полноты: npx tsx scripts/i18n-check.ts */
 export const EN: Record<string, string> = {
+  "Идентичность сохранена": "Identity saved",
+  "Комментарии от вашего имени": "Comments in your name",
+  "Комментарий отклонён": "Comment rejected",
+  "Комментарий согласован": "Comment approved",
+  "Организация LinkedIn": "LinkedIn organization",
+  "Открыть публикацию": "Open the post",
+  "По стратегии комментарии от вашего имени согласуете вы. Согласуется именно этот текст.": "Under the strategy, you approve comments in your name. Approval applies to this exact text.",
+  "Профиль LinkedIn": "LinkedIn profile",
+  "Публикация разрешена только от имени этого профиля; подключение другого человека отклоняется.": "Posting is allowed only as this profile; connecting a different person is rejected.",
+  "Согласовать комментарий": "Approve comment",
+  "Страница компании публикует только от имени этой организации; подключающий должен быть её администратором.": "The company page posts only as this organization; the person connecting must be its administrator.",
+  "не определён": "not set",
   "Определение платформы: (реакции + комментарии + репосты) / показы × 100%. Не является метрикой LinkedIn.": "Platform definition: (reactions + comments + reposts) / impressions × 100%. Not a LinkedIn metric.",
   "Отметил": "Recorded by",
   "аккаунтов в работе": "accounts in work",

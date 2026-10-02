@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { accountScope, audit, ConflictError, emit, NotFoundError, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
+import { accountScope, audit, ConflictError, emit, isInternal, NotFoundError, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
 import { activeStrategy, currentCapabilities, hasConsent } from "./accounts";
 import { engagementPriority } from "../core/heuristics";
-import { assertNotSelfApproval, can } from "../core/permissions";
+import { assertNotSelfApproval, can, ForbiddenError } from "../core/permissions";
 import { forbiddenTopicHits, jobSearchSignals } from "../core/templates";
 import { detectInjection } from "../ai/guard";
 
@@ -24,7 +24,7 @@ const RecInput = z.object({
 });
 
 function normalize(t: string) { return t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim(); }
-function requiredApprover(strategy: any, action: string): "client" | "account_manager" {
+export function requiredApprover(strategy: any, action: string): "client" | "account_manager" {
   const personal: string[] = (strategy?.restrictions?.needs_personal_approval ?? []).map((x: string) => x.toLowerCase());
   return action !== "react" && personal.some((p) => p.includes("коммент") || p.includes("comment")) ? "client" : "account_manager";
 }
@@ -46,9 +46,10 @@ export async function createRecommendation(ctx: Ctx, accountId: string, input: u
   const scope = d.action_type === "react" ? "react" : "comment";
   if (!(await hasConsent(q, accountId, scope))) blockers.push(`Нет согласия владельца на ${scope === "react" ? "реакции" : "комментарии"}`);
   if (a.confidential_job_search && jobSearchSignals(d.proposed_comment ?? "").length) blockers.push("Сигнал о поиске работы при конфиденциальном режиме");
-  // Запрет взаимной поддержки публикаций между клиентами агентства (функция видит всех клиентов, RLS не мешает).
-  const crossClient = (await q.query("SELECT target_is_other_managed_account($1, $2, $3, $4) AS hit", [ctx.actor.agency_id, accountId, d.target_url, d.target_author ?? null])).rows[0].hit;
-  if (crossClient) blockers.push("Цель принадлежит другому клиенту агентства: взаимная поддержка между клиентами запрещена");
+  // Запрет взаимной поддержки между аккаунтами агентства. Функция возвращает только boolean,
+  // а сообщение не раскрывает, какой именно аккаунт или клиент обслуживает агентство.
+  const crossClient = (await q.query("SELECT target_is_other_managed_account($1, $2, $3) AS hit", [accountId, d.target_url, d.target_author ?? null])).rows[0].hit;
+  if (crossClient) blockers.push("Цель недоступна по правилам агентства: взаимная поддержка между обслуживаемыми аккаунтами запрещена");
   const dup = (await q.query("SELECT 1 FROM engagement_recommendations WHERE account_id = $1 AND target_url = $2 AND action_type = $3 AND status NOT IN ('rejected','expired')", [accountId, d.target_url, d.action_type])).rows.length;
   if (dup) blockers.push("Повтор: такое действие для этой цели уже есть");
   if (d.proposed_comment) {
@@ -69,6 +70,8 @@ export async function createRecommendation(ctx: Ctx, accountId: string, input: u
 }
 
 export async function listQueue(ctx: Ctx, f: { account_id?: string; status?: string } = {}) {
+  // Очередь взаимодействий: рабочий инструмент команды. Клиент согласует свои комментарии в кабинете.
+  if (!isInternal(ctx)) throw new ForbiddenError("view", "Очередь взаимодействий доступна только команде агентства");
   const vis = visibleAccountsFilter(ctx, "a", 2);
   const params: unknown[] = [ctx.actor.agency_id, ...vis.params];
   let where = `c.agency_id = $1 AND ${vis.sql}`;

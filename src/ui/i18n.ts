@@ -50,6 +50,11 @@ const PATTERNS: [RegExp, (...m: string[]) => string][] = [
 ];
 
 const STATIC: Record<string, string> = {
+  "Цель недоступна по правилам агентства: взаимная поддержка между обслуживаемыми аккаунтами запрещена": "Target not allowed by agency rules: mutual support between managed accounts is prohibited",
+  "Страница компании не связана с организацией LinkedIn: публикация от имени человека запрещена": "The company page is not linked to a LinkedIn organization: posting as a person is prohibited",
+  "Подключён другой профиль LinkedIn": "A different LinkedIn profile is connected",
+  "Раздел доступен только команде агентства": "This section is available to the agency team only",
+  "Нет действующего согласия на публикацию": "No valid consent to publish",
   "Нет утверждённой стратегии": "No approved strategy",
   "Публикация приостановлена": "Publishing paused",
   "Подключение скоро истечёт": "Connection expires soon",

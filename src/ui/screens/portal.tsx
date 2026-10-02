@@ -29,6 +29,20 @@ export function PortalPage() {
                 <button className="btn" disabled={busy || !(comments[x.approval_request_id] ?? "").trim()} onClick={() => run(() => api(`/api/content/${x.content_item_id}/decision`, { body: { decision: "changes_requested", comment: comments[x.approval_request_id], approval_request_id: x.approval_request_id } }), "Правки отправлены команде", s.reload)}>{t("Запросить правки")}</button>
               </div>
             </div>))}</div>}
+          {a.engagement_approvals?.length > 0 && <>
+            <h3>{t("Комментарии от вашего имени")}</h3>
+            <p className="small muted">{t("По стратегии комментарии от вашего имени согласуете вы. Согласуется именно этот текст.")}</p>
+            <div className="list">{a.engagement_approvals.map((x: any) => (
+              <div key={x.id} className="item">
+                <div className="small muted">{x.target_author ? `${x.target_author} · ` : ""}<a href={x.target_url} target="_blank" rel="noreferrer">{t("Открыть публикацию")}</a></div>
+                {x.target_excerpt && <p className="small muted">{x.target_excerpt}</p>}
+                <div className="post" style={{ marginTop: 6 }}>{x.proposed_comment}</div>
+                <div className="row" style={{ marginTop: 8 }}>
+                  <button className="btn primary" disabled={busy} onClick={() => run(() => api(`/api/engagement/${x.id}/decision`, { body: { decision: "approved", comment_text: x.proposed_comment } }), "Комментарий согласован", s.reload)}>{t("Согласовать комментарий")}</button>
+                  <button className="btn" disabled={busy} onClick={() => run(() => api(`/api/engagement/${x.id}/decision`, { body: { decision: "rejected" } }), "Комментарий отклонён", s.reload)}>{t("Отклонить")}</button>
+                </div>
+              </div>))}</div>
+          </>}
           <div className="grid cols-2" style={{ marginTop: 14 }}>
             <div className="panel">
               <h3>{t("Запланировано")}</h3>

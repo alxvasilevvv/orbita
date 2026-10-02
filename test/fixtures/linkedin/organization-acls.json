@@ -1,0 +1,9 @@
+{
+  "paging": { "start": 0, "count": 10, "links": [] },
+  "elements": [
+    { "roleAssignee": "urn:li:person:abc123", "state": "APPROVED", "role": "ADMINISTRATOR", "organization": "urn:li:organization:2414183" },
+    { "roleAssignee": "urn:li:person:abc123", "state": "REQUESTED", "role": "ADMINISTRATOR", "organization": "urn:li:organization:999" },
+    { "roleAssignee": "urn:li:person:abc123", "state": "APPROVED", "role": "ANALYST", "organization": "urn:li:organization:555" },
+    { "roleAssignee": "urn:li:person:abc123", "state": "APPROVED", "role": "ADMINISTRATOR", "organization": "urn:li:organization:2414183" }
+  ]
+}

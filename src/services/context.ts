@@ -1,6 +1,6 @@
 import type { Db, Queryable } from "../db/db";
 import { scopedDb, type DbScope } from "../db/scope";
-import { agencyWide, allowedOperations, can, ForbiddenError, type Membership, type Operation } from "../core/permissions";
+import { agencyWide, allowedOperations, can, ForbiddenError, membershipApplies, type Membership, type Operation } from "../core/permissions";
 
 export interface Actor { id: string; agency_id: string; display_name: string; memberships: Membership[]; scope: DbScope }
 export interface Ctx { db: Db; actor: Actor }
@@ -23,12 +23,18 @@ export async function loadActor(db: Queryable, userId: string): Promise<Actor | 
   if (!u) return null;
   const memberships: Membership[] = typeof u.memberships === "string" ? JSON.parse(u.memberships) : u.memberships;
   const wide = agencyWide(memberships);
-  // Для ролей уровня агентства в область попадают все клиенты агентства: политика RLS проверяет членство в списке.
-  const clientIds = [...new Set([...(wide ? u.agency_clients : []), ...memberships.filter((m) => m.scope_client_id).map((m) => m.scope_client_id as string), ...u.account_clients])] as string[];
+  // Клиенты целиком: все клиенты агентства для ролей уровня агентства и роли на клиента (кроме аудитора).
+  const full = new Set<string>([...(wide ? u.agency_clients : []), ...memberships.filter((m) => m.scope_client_id && !m.scope_account_id && m.role !== "auditor").map((m) => m.scope_client_id as string)]);
+  // Роль на аккаунт открывает только этот аккаунт и строки уровня его клиента, но не соседние аккаунты.
+  const accountIds = [...new Set(memberships.filter((m) => m.scope_account_id && m.role !== "auditor").map((m) => m.scope_account_id as string))];
+  const partialClientIds = (u.account_clients as string[]).filter((c) => !full.has(c));
   const scope: DbScope = {
     agencyId: u.agency_id,
     allClients: wide,
-    clientIds,
+    clientIds: [...full],
+    accountIds,
+    partialClientIds,
+    internal: memberships.some((m) => m.role !== "client" && m.role !== "auditor"),
     audit: memberships.some((m) => m.role === "auditor" || m.role === "owner"),
   };
   return { id: u.id, agency_id: u.agency_id, display_name: u.display_name, memberships, scope };
@@ -48,6 +54,11 @@ export async function accountScope(q: Queryable, ctx: Ctx, accountId: string) {
   // Чужой или несуществующий объект неразличимы для запрашивающего.
   if (!r || !allowedOperations(ctx.actor.memberships, { clientId: r.client_id, accountId: r.id }).size) throw new NotFoundError("Аккаунт не найден");
   return r as { id: string; client_id: string; timezone: string; kind: string; display_name: string; publishing_paused: boolean; confidential_job_search: boolean };
+}
+
+/** Есть ли у пользователя роль агентства (не «клиент» и не «аудитор»), при наличии цели: применимая к ней. */
+export function isInternal(ctx: Ctx, t?: { clientId?: string; accountId?: string }) {
+  return ctx.actor.memberships.some((m) => !m.revoked_at && m.role !== "client" && m.role !== "auditor" && (!t || membershipApplies(m, t)));
 }
 
 export function requireOp(ctx: Ctx, op: Operation, t: { clientId?: string; accountId?: string }) {

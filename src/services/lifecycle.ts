@@ -4,6 +4,7 @@ import type { Db } from "../db/db";
 import { audit, ConflictError, emit, NotFoundError, requireOp, ValidationError, type Ctx } from "./context";
 import { ForbiddenError } from "../core/permissions";
 import type { Storage } from "./storage";
+import { cancelPendingJobs } from "./jobs";
 
 /**
  * Порядок удаления данных клиента с учётом внешних ключей. Каждая таблица с client_id
@@ -36,7 +37,7 @@ export async function startOffboarding(ctx: Ctx, deps: { secrets: SecretDeleter 
   const r = await ctx.db.tx(async (q) => {
     await q.query("UPDATE clients SET status = 'offboarding', offboarding_started_at = now() WHERE id = $1", [clientId]);
     await q.query("UPDATE managed_accounts SET publishing_paused = true, status = 'paused' WHERE client_id = $1", [clientId]);
-    const jobs = await q.query("UPDATE publication_jobs SET status = 'cancelled', last_error_code = 'client_offboarding' WHERE client_id = $1 AND status IN ('queued','awaiting_human') RETURNING id", [clientId]);
+    const jobs = { rows: await cancelPendingJobs(q, { clientId }, "client_offboarding", { resetScheduled: true }) };
     await q.query("UPDATE oauth_connections SET status = 'revoked', updated_at = now() WHERE client_id = $1", [clientId]);
     await q.query("UPDATE consents SET revoked_at = now() WHERE client_id = $1 AND revoked_at IS NULL", [clientId]);
     await emit(q, "client.offboarding", clientId, {}, `offboarding:${clientId}`);
@@ -70,6 +71,11 @@ export async function deleteClientData(ctx: Ctx, deps: { systemDb: Db; storage: 
     steps.push({ step: "secrets", result: refs.length });
     // 2. Файлы (медиа, экспорты) по префиксу клиента.
     steps.push({ step: "files", result: await deps.storage.deletePrefix(`clients/${clientId}/`) });
+    // 2a. Выгрузки уровня агентства могут содержать строки этого клиента (задачи, время): удаляются целиком,
+    // записи о них помечаются истёкшими. Их можно сформировать заново без удалённого клиента.
+    const agencyExports = await deps.storage.deletePrefix(`agencies/${ctx.actor.agency_id}/exports/`);
+    await db.query("UPDATE exports SET status = 'expired', storage_key = NULL WHERE agency_id = $1 AND client_id IS NULL AND status IN ('ready','queued','running')", [ctx.actor.agency_id]);
+    steps.push({ step: "agency_exports", result: agencyExports });
     // 3. База данных. Пользователи, у которых был доступ только как у представителей этого клиента, обезличиваются.
     const clientUsers = (await db.query(
       `SELECT DISTINCT m.user_id FROM memberships m LEFT JOIN managed_accounts a ON a.id = m.scope_account_id
