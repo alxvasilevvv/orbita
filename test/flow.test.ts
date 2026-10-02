@@ -278,7 +278,7 @@ describe("операции", () => {
     const { a1, itemId } = await approvedItem();
     await content.schedule(await env.ctx("manager"), itemId, { local_time: localIn("America/New_York", future(1)) });
     await pub.markPublishedManually(await env.ctx("manager"), itemId, { url: "https://www.linkedin.com/feed/update/1/" });
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date(Date.now() + 2 * 864e5).toISOString().slice(0, 10);
     const r: any = await ops.generateWeeklyReport(await env.ctx("manager"), a1.id, { period_start: "2026-01-01", period_end: today });
     expect(r.published.length).toBe(1);
     expect(r.data_limitations.join(" ")).toMatch(/ручной отметкой/);

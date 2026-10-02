@@ -4,6 +4,8 @@ import { accountScope, audit, ConflictError, emit, NotFoundError, requireOp, Val
 import { currentCapabilities, hasConsent } from "./accounts";
 import { IntegrationError, type SocialAdapter } from "../integrations/linkedin/adapter";
 import { readinessIssues } from "./content";
+import { mediaIssues } from "./media";
+import type { Storage } from "./storage";
 
 export interface SecretStore { get(ref: string): Promise<string | null> }
 /** Dev-хранилище. В продакшне — AWS Secrets Manager / Vault через тот же интерфейс. */
@@ -11,6 +13,7 @@ export class MemorySecretStore implements SecretStore {
   constructor(private m = new Map<string, string>()) {}
   set(ref: string, v: string) { this.m.set(ref, v); }
   async get(ref: string) { return this.m.get(ref) ?? null; }
+  async delete(ref: string) { this.m.delete(ref); }
 }
 
 const SYSTEM = (agencyId: string) => ({ actor: { id: null, agency_id: agencyId } });
@@ -55,7 +58,7 @@ export async function enqueuePublication(ctx: Ctx, itemId: string, runAt: Date) 
   });
 }
 
-export interface WorkerDeps { db: Db; adapter: SocialAdapter; secrets: SecretStore; workerId: string; memberDailyLimit?: number; leaseSeconds?: number; now?: () => Date; apiVersion?: string }
+export interface WorkerDeps { db: Db; adapter: SocialAdapter; secrets: SecretStore; workerId: string; memberDailyLimit?: number; leaseSeconds?: number; now?: () => Date; apiVersion?: string; storage?: Storage }
 
 /** Один проход исполнителя. Ошибка одного аккаунта не останавливает остальных. */
 export async function runDueJobs(deps: WorkerDeps, limit = 50) {
@@ -80,6 +83,9 @@ export async function runDueJobs(deps: WorkerDeps, limit = 50) {
 async function systemSetContent(q: Queryable, job: any, agencyId: string, state: string, extra = "", details: Record<string, unknown> = {}) {
   await q.query(`UPDATE content_items SET state = $2, ${extra} updated_at = now(), row_version = row_version + 1 WHERE id = $1`, [job.content_item_id, state]);
   await audit(q, SYSTEM(agencyId), { action: `content.${state}`, entity_type: "content_item", entity_id: job.content_item_id, client_id: job.client_id, account_id: job.account_id, details: { job_id: job.id, ...details } });
+  if (["published", "failed", "publication_unknown"].includes(state)) {
+    await emit(q, `content.${state}`, job.client_id, { content_item_id: job.content_item_id, account_id: job.account_id }, `content.${state}:${job.id}`);
+  }
 }
 
 async function humanTask(q: Queryable, job: any, type: string, title: string, details: string) {
@@ -117,6 +123,9 @@ export async function executeJob(deps: WorkerDeps, jobId: string, now = new Date
     const conn = (await q.query("SELECT * FROM oauth_connections WHERE account_id = $1 AND status IN ('active','expiring') ORDER BY updated_at DESC LIMIT 1", [job.account_id])).rows[0];
     if (cap?.mode !== "api" || !conn) blockers.push({ code: "capability", msg: cap?.unavailable_reason ?? "Нет активного подключения" });
     if (conn?.expires_at && new Date(conn.expires_at) <= now) blockers.push({ code: "token_expired", msg: "Срок токена истёк" });
+    const ver = (await q.query("SELECT body, media_ids FROM content_versions WHERE id = $1", [job.content_version_id])).rows[0];
+    const apiMedia = await mediaIssues(q, job.account_id, ver.media_ids, "api");
+    if (apiMedia.length) blockers.push({ code: "capability", msg: apiMedia.join("; ") });
     const issues = await readinessIssues(q, it);
     if (issues.length) blockers.push({ code: "readiness", msg: issues.join("; "), final: true });
     const used = (await q.query("SELECT count(*)::int AS n FROM action_records WHERE account_id = $1 AND origin = 'platform_api' AND requested_at > $2::timestamptz - interval '24 hours'", [job.account_id, now.toISOString()])).rows[0].n;
@@ -135,11 +144,13 @@ export async function executeJob(deps: WorkerDeps, jobId: string, now = new Date
       await audit(q, SYSTEM(agencyId), { action: "publication.blocked", entity_type: "publication_job", entity_id: job.id, client_id: job.client_id, account_id: job.account_id, details: { blockers: blockers.map((b) => b.code) } });
       return { blocked: true as const, status };
     }
-    const body = (await q.query("SELECT body FROM content_versions WHERE id = $1", [job.content_version_id])).rows[0].body;
+    const body = ver.body as string;
+    const media = ver.media_ids?.length ? (await q.query("SELECT id, storage_key, mime_type, external_urn FROM media_assets WHERE id = ANY($1::uuid[])", [ver.media_ids])).rows : [];
+    const orderedMedia = (ver.media_ids as string[]).map((id) => media.find((m: any) => m.id === id));
     await systemSetContent(q, job, agencyId, "publishing");
     await q.query("UPDATE publication_jobs SET attempts = attempts + 1 WHERE id = $1", [job.id]);
     const ar = (await q.query("INSERT INTO action_records(client_id, account_id, action_type, target, origin, requested_at, status, evidence_type) VALUES ($1,$2,'publish_post',$3,'platform_api',now(),'requested','unconfirmed') RETURNING id", [job.client_id, job.account_id, job.content_item_id])).rows[0];
-    return { blocked: false as const, body, conn, actionId: ar.id as string, title: it.title };
+    return { blocked: false as const, body, conn, actionId: ar.id as string, title: it.title, media: orderedMedia };
   });
   if (pre.blocked) return `blocked:${pre.status}`;
 
@@ -147,7 +158,18 @@ export async function executeJob(deps: WorkerDeps, jobId: string, now = new Date
   try {
     const token = await deps.secrets.get(pre.conn.secret_ref);
     if (!token) throw new IntegrationError("auth", "secret_missing", "Токен не найден в хранилище секретов");
-    const res = await deps.adapter.publishPost({ idempotencyKey: job.idempotency_key, authorUrn: pre.conn.external_subject, body: pre.body, accessToken: token, apiVersion: deps.apiVersion ?? "202608" });
+    // Изображения загружаются один раз: URN сохраняется и переиспользуется при повторах.
+    const imageUrns: string[] = [];
+    for (const m of pre.media) {
+      if (m.external_urn) { imageUrns.push(m.external_urn); continue; }
+      if (!deps.storage) throw new IntegrationError("permanent", "storage_missing", "Хранилище файлов недоступно исполнителю");
+      const data = await deps.storage.get(m.storage_key);
+      if (!data) throw new IntegrationError("permanent", "media_missing", "Файл вложения не найден в хранилище");
+      const urn = await deps.adapter.uploadImage({ authorUrn: pre.conn.external_subject, accessToken: token, apiVersion: deps.apiVersion ?? "202608", data, contentType: m.mime_type });
+      await deps.db.query("UPDATE media_assets SET external_urn = $2 WHERE id = $1", [m.id, urn]);
+      imageUrns.push(urn);
+    }
+    const res = await deps.adapter.publishPost({ idempotencyKey: job.idempotency_key, authorUrn: pre.conn.external_subject, body: pre.body, accessToken: token, apiVersion: deps.apiVersion ?? "202608", imageUrns });
     await recordSuccess(deps.db, job, agencyId, pre.actionId, res, "api_confirmed");
     return "published";
   } catch (e) {

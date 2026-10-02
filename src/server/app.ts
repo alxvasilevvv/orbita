@@ -3,27 +3,85 @@ import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 import type { Db } from "../db/db";
-import { loadActor, type Ctx } from "../services/context";
+import { accountScope, actorCtx, loadActor, requireOp, type Ctx } from "../services/context";
 import * as acc from "../services/accounts";
 import * as content from "../services/content";
 import * as pub from "../services/publishing";
 import * as ops from "../services/operations";
+import * as notifySvc from "../services/notify";
+import * as wf from "../services/workflows";
+import * as media from "../services/media";
+import * as cal from "../services/calendar";
+import * as onb from "../services/onboarding";
+import * as eng from "../services/engagement";
+import * as ai from "../services/ai";
+import * as ins from "../services/insights";
+import * as reports from "../services/reports";
+import * as exp from "../services/exports";
+import * as team from "../services/team";
+import * as life from "../services/lifecycle";
+import * as portal from "../services/portal";
 import { CAPABILITY_CATALOG } from "../core/capabilities";
 import { STRATEGY_TEMPLATES } from "../core/templates";
 import { dailyRequestBudget } from "../core/heuristics";
-import type { SecretStore } from "../services/publishing";
+import { allowedOperations, agencyWide } from "../core/permissions";
+import { DemoAiProvider, type AiProvider } from "../ai/guard";
+import { LocalStorage, type Storage } from "../services/storage";
+import { SignatureScanner, type MalwareScanner, MEDIA_LIMITS } from "../services/media";
+import type { SecretStoreFull } from "../runtime";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export interface AppDeps { db: Db; secrets: SecretStore & { set?(k: string, v: string): unknown }; authMode: "dev" | "header" }
+export interface AppDeps {
+  db: Db;
+  secrets: SecretStoreFull | (pub.SecretStore & { set?(k: string, v: string): unknown; delete?(k: string): Promise<void> });
+  authMode: "dev" | "header";
+  storage?: Storage;
+  scanner?: MalwareScanner;
+  ai?: AiProvider;
+}
+
+/** Простой лимитер запросов на пользователя/IP: защита от случайных циклов в клиентах. Основная защита — WAF. */
+function rateLimiter(limitPerMin: number) {
+  const hits = new Map<string, { n: number; reset: number }>();
+  return (key: string) => {
+    const now = Date.now();
+    const h = hits.get(key);
+    if (!h || h.reset < now) { hits.set(key, { n: 1, reset: now + 60_000 }); return true; }
+    h.n++;
+    return h.n <= limitPerMin;
+  };
+}
 
 export function buildApp(deps: AppDeps) {
-  const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info", redact: ["req.headers.authorization", "req.headers.cookie"] } });
+  const storage = deps.storage ?? new LocalStorage(process.env.FILES_DIR ?? "./data/files", process.env.SECRETS_KEY ?? "dev-only-insecure-key");
+  const scanner = deps.scanner ?? new SignatureScanner();
+  const aiProvider = deps.ai ?? new DemoAiProvider();
+  const app = Fastify({
+    logger: { level: process.env.LOG_LEVEL ?? "info", redact: ["req.headers.authorization", "req.headers.cookie", "req.headers[\"x-authenticated-user-id\"]"] },
+    bodyLimit: 2 * 1024 * 1024,
+    trustProxy: process.env.TRUST_PROXY === "1",
+  });
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: MEDIA_LIMITS.video.maxBytes }, (_req, body, done) => done(null, body));
+  const limit = rateLimiter(Number(process.env.API_RATE_LIMIT_PER_MIN ?? 600));
+
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.url.startsWith("/api/") && !limit(`${req.headers["x-user-id"] ?? req.headers["x-authenticated-user-id"] ?? req.ip}`)) {
+      return reply.status(429).send({ error: "rate_limited", message: "Слишком много запросов, повторите через минуту" });
+    }
+  });
+  app.addHook("onSend", async (_req, reply, payload) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Referrer-Policy", "same-origin");
+    reply.header("Content-Security-Policy", "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self'; frame-ancestors 'none'");
+    return payload;
+  });
 
   app.setErrorHandler((err: any, _req, reply) => {
-    if (err instanceof ZodError) return reply.status(422).send({ error: "validation_error", message: "Некорректные данные", details: err.issues });
+    if (err instanceof ZodError) return reply.status(422).send({ error: "validation_error", message: "Некорректные данные", details: err.issues.map((i) => ({ path: i.path.join("."), message: i.message })) });
     const status = err.status ?? err.statusCode ?? 500;
     if (status >= 500) app.log.error({ err: { message: err.message, stack: err.stack } }, "unhandled");
     return reply.status(status).send({ error: err.constructor?.name ?? "Error", message: status >= 500 ? "Внутренняя ошибка" : err.message, details: err.details });
@@ -31,26 +89,39 @@ export function buildApp(deps: AppDeps) {
 
   /**
    * Аутентификация. dev: пользователь из заголовка x-user-id (только вне production).
-   * header: доверенный заголовок от OIDC-прокси с MFA (oauth2-proxy / IdP), см. docs/adr/0003.
+   * header: доверенный заголовок от identity-aware proxy с MFA, см. docs/adr/0003.
    */
   async function ctxOf(req: FastifyRequest): Promise<Ctx> {
     const id = deps.authMode === "dev" ? (req.headers["x-user-id"] as string) : (req.headers["x-authenticated-user-id"] as string);
     if (!id || !/^[0-9a-f-]{36}$/.test(id)) throw Object.assign(new Error("Требуется вход"), { status: 401 });
     const actor = await loadActor(deps.db, id);
     if (!actor) throw Object.assign(new Error("Пользователь не найден или отключён"), { status: 401 });
-    return { db: deps.db, actor };
+    return actorCtx(deps.db, actor);
   }
   type Req<P> = FastifyRequest<{ Params: P; Body: any; Querystring: Record<string, string | undefined> }>;
   const h = <P = any>(fn: (ctx: Ctx, req: Req<P>, reply: FastifyReply) => Promise<unknown>) =>
     async (req: FastifyRequest<any>, reply: FastifyReply) => fn(await ctxOf(req), req as Req<P>, reply);
 
   // Статика UI
-  app.get("/", async (_r, reply) => reply.type("text/html").send(await readFile(join(here, "../../public/index.html"))));
-  app.get("/app.js", async (_r, reply) => reply.type("application/javascript").send(await readFile(join(here, "../../public/app.js"))));
-  app.get("/app.css", async (_r, reply) => reply.type("text/css").send(await readFile(join(here, "../../public/app.css"))));
-  app.get("/healthz", async () => {
-    await deps.db.query("SELECT 1");
-    return { ok: true };
+  const asset = (file: string, type: string) => async (_r: FastifyRequest, reply: FastifyReply) => reply.type(type).header("Cache-Control", "no-cache").send(await readFile(join(here, "../../public", file)));
+  app.get("/", asset("index.html", "text/html; charset=utf-8"));
+  app.get("/app.js", asset("app.js", "application/javascript; charset=utf-8"));
+  app.get("/app.css", asset("app.css", "text/css; charset=utf-8"));
+  app.get("/healthz", async () => { await deps.db.query("SELECT 1"); return { ok: true }; });
+  app.get("/readyz", async () => {
+    const q = (await deps.db.query("SELECT (SELECT count(*)::int FROM publication_jobs WHERE status = 'queued' AND run_at < now() - interval '15 minutes') AS stuck, (SELECT count(*)::int FROM outbox WHERE processed_at IS NULL AND created_at < now() - interval '15 minutes') AS outbox_lag")).rows[0];
+    return { ok: q.stuck === 0 && q.outbox_lag === 0, ...q };
+  });
+
+  // Файлы локального хранилища по подписанной ссылке.
+  app.get("/files", async (req: FastifyRequest<{ Querystring: { key?: string; exp?: string; sig?: string } }>, reply) => {
+    if (!(storage instanceof LocalStorage)) return reply.status(404).send();
+    const { key, exp: e, sig } = req.query;
+    if (!key || !e || !sig || !storage.verify(key, Number(e), sig)) return reply.status(403).send({ message: "Ссылка недействительна или истекла" });
+    const data = await storage.get(key);
+    if (!data) return reply.status(404).send();
+    const sniffed = media.sniff(data);
+    return reply.type(key.endsWith(".csv") ? "text/csv; charset=utf-8" : sniffed?.mime ?? "application/octet-stream").header("Content-Disposition", key.endsWith(".csv") ? "attachment; filename=export.csv" : "inline").send(data);
   });
 
   // Демо-вход: список пользователей для переключателя (только dev).
@@ -59,15 +130,40 @@ export function buildApp(deps: AppDeps) {
     return (await deps.db.query("SELECT u.id, u.display_name, array_agg(m.role) AS roles FROM users u JOIN memberships m ON m.user_id = u.id AND m.revoked_at IS NULL WHERE u.is_active GROUP BY u.id ORDER BY u.display_name")).rows;
   });
 
-  app.get("/api/me", h(async (ctx) => ctx.actor));
-  app.get("/api/meta", async () => ({ capability_catalog: CAPABILITY_CATALOG, strategy_templates: STRATEGY_TEMPLATES, approved_products: (process.env.LINKEDIN_APPROVED_PRODUCTS ?? "").split(",").filter(Boolean),
-    request_budget: [500, 2000].map((n) => ({ accounts: n, ...dailyRequestBudget({ accounts: n, syncsPerDay: 4, requestsPerSync: 3, publicationsPerDay: Math.round(n * 0.4), requestsPerPublication: 2, interactionsPerDay: n, reserve: 0.3 }) })) }));
+  app.get("/api/me", h(async (ctx) => {
+    const u = (await deps.db.query("SELECT locale FROM users WHERE id = $1", [ctx.actor.id])).rows[0];
+    const internal = ctx.actor.memberships.some((m) => m.role !== "client");
+    return { id: ctx.actor.id, display_name: ctx.actor.display_name, agency_id: ctx.actor.agency_id, roles: [...new Set(ctx.actor.memberships.map((m) => m.role))], agency_wide: agencyWide(ctx.actor.memberships), client_only: !internal, locale: u?.locale ?? "ru", agency_ops: [...allowedOperations(ctx.actor.memberships, {})] };
+  }));
+  app.patch("/api/me", h(async (ctx, req) => {
+    const d = z.object({ locale: z.enum(["ru", "en"]) }).parse(req.body);
+    await ctx.db.query("UPDATE users SET locale = $2 WHERE id = $1", [ctx.actor.id, d.locale]);
+    return { ok: true };
+  }));
+  app.get("/api/meta", async () => ({
+    capability_catalog: CAPABILITY_CATALOG, strategy_templates: STRATEGY_TEMPLATES, approved_products: (process.env.LINKEDIN_APPROVED_PRODUCTS ?? "").split(",").filter(Boolean),
+    request_budget: [500, 2000].map((n) => ({ accounts: n, ...dailyRequestBudget({ accounts: n, syncsPerDay: 4, requestsPerSync: 3, publicationsPerDay: Math.round(n * 0.4), requestsPerPublication: 2, interactionsPerDay: n, reserve: 0.3 }) })),
+    ai_provider: { name: aiProvider.name, model: aiProvider.model }, media_limits: MEDIA_LIMITS, triggers: wf.TRIGGERS, audit_criteria: onb.AUDIT_CRITERIA, pipelines: eng.PIPELINES, stages: eng.STAGE_RU,
+  }));
 
+  // Обзор, клиенты, аккаунты
   app.get("/api/overview", h(async (ctx) => ops.agencyOverview(ctx)));
-  app.get("/api/accounts", h(async (ctx, req) => acc.listAccounts(ctx, { q: req.query.q, attention: req.query.attention === "1", limit: Number(req.query.limit) || undefined, offset: Number(req.query.offset) || undefined })));
+  app.get("/api/clients", h(async (ctx) => (await ctx.db.query("SELECT id, name, status, monthly_fee, ai_budget_usd_month, approval_sla_hours FROM clients WHERE agency_id = $1 ORDER BY name", [ctx.actor.agency_id])).rows));
   app.post("/api/clients", h(async (ctx, req) => acc.createClient(ctx, req.body)));
+  app.patch("/api/clients/:id", h<{ id: string }>(async (ctx, req) => {
+    requireOp(ctx, "manage_clients", { clientId: req.params.id });
+    const d = z.object({ ai_budget_usd_month: z.number().min(0).nullable().optional(), approval_sla_hours: z.number().int().min(1).max(720).optional(), monthly_fee: z.number().min(0).nullable().optional() }).parse(req.body);
+    if (d.monthly_fee !== undefined) requireOp(ctx, "view_finance", {});
+    const r = await ctx.db.query(`UPDATE clients SET ai_budget_usd_month = CASE WHEN $2::boolean THEN $3 ELSE ai_budget_usd_month END, approval_sla_hours = coalesce($4, approval_sla_hours), monthly_fee = CASE WHEN $5::boolean THEN $6 ELSE monthly_fee END WHERE id = $1 RETURNING id`,
+      [req.params.id, d.ai_budget_usd_month !== undefined, d.ai_budget_usd_month ?? null, d.approval_sla_hours ?? null, d.monthly_fee !== undefined, d.monthly_fee ?? null]);
+    if (!r.rows.length) throw Object.assign(new Error("Клиент не найден"), { status: 404 });
+    return { ok: true };
+  }));
+  app.post("/api/clients/:id/offboarding", h<{ id: string }>(async (ctx, req) => life.startOffboarding(ctx, { secrets: deps.secrets as any }, req.params.id)));
+  app.post("/api/clients/:id/delete-data", h<{ id: string }>(async (ctx, req) => life.deleteClientData(ctx, { systemDb: deps.db, storage, secrets: deps.secrets as any }, req.params.id, req.body)));
+  app.get("/api/accounts", h(async (ctx, req) => acc.listAccounts(ctx, { q: req.query.q, attention: req.query.attention === "1", limit: Number(req.query.limit) || undefined, offset: Number(req.query.offset) || undefined })));
   app.post("/api/accounts", h(async (ctx, req) => acc.createAccount(ctx, req.body)));
-  app.get<{ Params: { id: string } }>("/api/accounts/:id", h<{ id: string }>(async (ctx, req) => acc.accountWorkspace(ctx, req.params.id)));
+  app.get("/api/accounts/:id", h<{ id: string }>(async (ctx, req) => acc.accountWorkspace(ctx, req.params.id)));
   app.post("/api/accounts/:id/capabilities/refresh", h<{ id: string }>(async (ctx, req) => acc.refreshCapabilities(ctx, req.params.id)));
   app.post("/api/accounts/:id/consents", h<{ id: string }>(async (ctx, req) => acc.grantConsent(ctx, req.params.id, req.body)));
   app.post("/api/accounts/:id/consents/:scope/revoke", h<{ id: string; scope: string }>(async (ctx, req) => acc.revokeConsent(ctx, req.params.id, req.params.scope)));
@@ -80,36 +176,106 @@ export function buildApp(deps: AppDeps) {
   app.post("/api/accounts/:id/metrics", h<{ id: string }>(async (ctx, req) => ops.enterMetrics(ctx, req.params.id, req.body)));
   app.get("/api/accounts/:id/post-metrics", h<{ id: string }>(async (ctx, req) => ops.postMetrics(ctx, req.params.id)));
   app.post("/api/accounts/:id/reports/weekly", h<{ id: string }>(async (ctx, req) => ops.generateWeeklyReport(ctx, req.params.id, req.body)));
+  app.post("/api/accounts/:id/reports/monthly", h<{ id: string }>(async (ctx, req) => reports.generateMonthlyReport(ctx, req.params.id, req.body)));
   app.post("/api/accounts/:id/opportunities", h<{ id: string }>(async (ctx, req) => ops.addOpportunity(ctx, req.params.id, req.body)));
+  app.get("/api/accounts/:id/opportunities", h<{ id: string }>(async (ctx, req) => eng.listOpportunities(ctx, req.params.id)));
+  app.post("/api/opportunities/:id/move", h<{ id: string }>(async (ctx, req) => eng.moveOpportunity(ctx, req.params.id, req.body)));
   app.post("/api/accounts/:id/time", h<{ id: string }>(async (ctx, req) => ops.logTime(ctx, req.params.id, req.body)));
   app.get("/api/reports/:id", h<{ id: string }>(async (ctx, req) => ops.getReport(ctx, req.params.id)));
+  app.post("/api/reports/:id/share", h<{ id: string }>(async (ctx, req) => reports.publishReport(ctx, req.params.id)));
+  app.post("/api/reports/:id/ai-summary", h<{ id: string }>(async (ctx, req) => ai.aiReportSummary(ctx, aiProvider, req.params.id)));
+  app.get("/api/agency-report", h(async (ctx, req) => reports.agencyReport(ctx, { month: req.query.month ?? new Date().toISOString().slice(0, 7) })));
 
+  // Онбординг, аудит профиля, календарь
+  app.get("/api/accounts/:id/onboarding", h<{ id: string }>(async (ctx, req) => onb.onboardingStatus(ctx, req.params.id)));
+  app.get("/api/accounts/:id/profile-audits", h<{ id: string }>(async (ctx, req) => onb.listAudits(ctx, req.params.id)));
+  app.post("/api/accounts/:id/profile-audits", h<{ id: string }>(async (ctx, req) => onb.createProfileAudit(ctx, req.params.id, req.body)));
+  app.get("/api/calendar", h(async (ctx, req) => cal.getCalendar(ctx, { from: req.query.from ?? "", to: req.query.to ?? "", account_id: req.query.account_id })));
+  app.post("/api/accounts/:id/plan-month", h<{ id: string }>(async (ctx, req) => cal.planMonth(ctx, req.params.id, req.body)));
+  app.get("/api/accounts/:id/window-stats", h<{ id: string }>(async (ctx, req) => cal.windowStats(ctx, req.params.id)));
+
+  // Медиа
+  app.post("/api/accounts/:id/media", h<{ id: string }>(async (ctx, req) => {
+    if (!Buffer.isBuffer(req.body)) throw Object.assign(new Error("Ожидается файл (application/octet-stream)"), { status: 415 });
+    const name = decodeURIComponent(String(req.headers["x-filename"] ?? "file"));
+    return media.uploadMedia(ctx, { storage, scanner }, req.params.id, { filename: name, data: req.body });
+  }));
+  app.get("/api/accounts/:id/media", h<{ id: string }>(async (ctx, req) => media.listMedia(ctx, req.params.id)));
+  app.get("/api/media/:id/url", h<{ id: string }>(async (ctx, req) => media.mediaUrl(ctx, storage, req.params.id)));
+
+  // Контент и согласования
   app.get("/api/content/:id", h<{ id: string }>(async (ctx, req) => content.contentDetail(ctx, req.params.id)));
   app.post("/api/content/:id/versions", h<{ id: string }>(async (ctx, req) => content.addVersion(ctx, req.params.id, req.body)));
-  app.post("/api/content/:id/ai-draft", h<{ id: string }>(async (ctx, req) => content.aiDraft(ctx, req.params.id, req.body)));
+  app.post("/api/content/:id/ai-draft", h<{ id: string }>(async (ctx, req) => content.aiDraft(ctx, req.params.id, req.body, aiProvider)));
+  app.post("/api/content/:id/ai-review", h<{ id: string }>(async (ctx, req) => ai.aiReview(ctx, aiProvider, req.params.id, (req.body as any)?.role === "fact_checker" ? "fact_checker" : "editor")));
   app.post("/api/content/:id/submit", h<{ id: string }>(async (ctx, req) => content.submitForReview(ctx, req.params.id)));
   app.post("/api/content/:id/decision", h<{ id: string }>(async (ctx, req) => content.decide(ctx, req.params.id, req.body)));
   app.post("/api/content/:id/schedule", h<{ id: string }>(async (ctx, req) => content.schedule(ctx, req.params.id, req.body)));
   app.post("/api/content/:id/cancel", h<{ id: string }>(async (ctx, req) => content.cancelContent(ctx, req.params.id, (req.body as any)?.comment)));
   app.post("/api/content/:id/mark-published", h<{ id: string }>(async (ctx, req) => pub.markPublishedManually(ctx, req.params.id, req.body)));
   app.post("/api/content/:id/resolve-unknown", h<{ id: string }>(async (ctx, req) => pub.resolveUnknown(ctx, req.params.id, req.body)));
-
   app.get("/api/approvals", h(async (ctx) => content.listApprovals(ctx)));
+  app.post("/api/approvals/batch", h(async (ctx, req) => content.decideBatch(ctx, req.body)));
+
+  // Взаимодействия
+  app.get("/api/engagement", h(async (ctx, req) => eng.listQueue(ctx, { account_id: req.query.account_id, status: req.query.status })));
+  app.post("/api/accounts/:id/engagement", h<{ id: string }>(async (ctx, req) => eng.createRecommendation(ctx, req.params.id, req.body)));
+  app.post("/api/engagement/:id/decision", h<{ id: string }>(async (ctx, req) => eng.decideRecommendation(ctx, req.params.id, req.body)));
+  app.post("/api/engagement/:id/executed", h<{ id: string }>(async (ctx, req) => eng.markExecuted(ctx, req.params.id, req.body)));
+  app.get("/api/accounts/:id/engagement-sources", h<{ id: string }>(async (ctx, req) => eng.listSources(ctx, req.params.id)));
+  app.post("/api/accounts/:id/engagement-sources", h<{ id: string }>(async (ctx, req) => eng.addSource(ctx, req.params.id, req.body)));
+  app.post("/api/accounts/:id/ai/comment", h<{ id: string }>(async (ctx, req) => ai.aiSuggestComment(ctx, aiProvider, req.params.id, req.body)));
+
+  // Улучшение стратегии
+  app.get("/api/accounts/:id/insights", h<{ id: string }>(async (ctx, req) => ins.listInsights(ctx, req.params.id)));
+  app.post("/api/accounts/:id/insights/run", h<{ id: string }>(async (ctx, req) => ins.runAnalysisNow(ctx, req.params.id)));
+  app.post("/api/strategy-recommendations/:id/decision", h<{ id: string }>(async (ctx, req) => ins.decideRecommendation(ctx, req.params.id, req.body)));
+  app.post("/api/experiments/:id/conclude", h<{ id: string }>(async (ctx, req) => ins.concludeExperiment(ctx, req.params.id, req.body)));
+  app.get("/api/ai/quality", h(async (ctx) => ai.aiQuality(ctx)));
+
+  // Задачи, сценарии, уведомления
   app.get("/api/tasks", h(async (ctx, req) => ops.listTasks(ctx, { mine: req.query.mine === "1", status: req.query.status })));
   app.patch("/api/tasks/:id", h<{ id: string }>(async (ctx, req) => ops.updateTask(ctx, req.params.id, req.body)));
   app.post("/api/bulk/tasks", h(async (ctx, req) => acc.bulkCreateTasks(ctx, req.body)));
+  app.get("/api/workflows", h(async (ctx) => wf.listWorkflows(ctx)));
+  app.post("/api/workflows", h(async (ctx, req) => wf.saveWorkflow(ctx, req.body)));
+  app.post("/api/workflows/:id/enabled", h<{ id: string }>(async (ctx, req) => wf.setWorkflowEnabled(ctx, req.params.id, !!(req.body as any)?.enabled)));
+  app.post("/api/workflows/:id/preview", h<{ id: string }>(async (ctx, req) => wf.previewWorkflow(ctx, req.params.id, req.body ?? {})));
+  app.get("/api/workflows/:id/runs", h<{ id: string }>(async (ctx, req) => wf.workflowRuns(ctx, req.params.id)));
+  app.get("/api/notifications", h(async (ctx, req) => notifySvc.listNotifications(ctx, req.query.unread === "1")));
+  app.post("/api/notifications/read", h(async (ctx, req) => notifySvc.markRead(ctx, (req.body as any)?.ids ?? "all")));
+
+  // Публикация: аварийная пауза
   app.post("/api/publishing/pause", h(async (ctx, req) => pub.pausePublishing(ctx, req.body)));
-  app.get("/api/audit", h(async (ctx, req) => ops.auditLog(ctx, { account_id: req.query.account_id, limit: Number(req.query.limit) || undefined })));
-  app.get("/api/users", h(async (ctx) => ops.listUsers(ctx)));
+
+  // Команда, инциденты, аудит, экспорты
+  app.get("/api/team", h(async (ctx) => team.listTeam(ctx)));
+  app.post("/api/team/invite", h(async (ctx, req) => team.inviteUser(ctx, req.body)));
+  app.post("/api/team/roles", h(async (ctx, req) => team.grantRole(ctx, req.body)));
+  app.post("/api/team/roles/:id/revoke", h<{ id: string }>(async (ctx, req) => team.revokeRole(ctx, req.params.id)));
+  app.patch("/api/team/:id", h<{ id: string }>(async (ctx, req) => team.updateCapacity(ctx, req.params.id, req.body)));
   app.post("/api/users/:id/offboard", h<{ id: string }>(async (ctx, req) => ops.offboardUser(ctx, req.params.id)));
+  app.get("/api/users", h(async (ctx) => ops.listUsers(ctx)));
+  app.get("/api/incidents", h(async (ctx, req) => team.listIncidents(ctx, req.query.status)));
+  app.post("/api/incidents", h(async (ctx, req) => team.createIncident(ctx, req.body)));
+  app.post("/api/incidents/:id/resolve", h<{ id: string }>(async (ctx, req) => team.resolveIncident(ctx, req.params.id, req.body)));
+  app.get("/api/audit", h(async (ctx, req) => ops.auditLog(ctx, { account_id: req.query.account_id, limit: Number(req.query.limit) || undefined })));
+  app.post("/api/exports", h(async (ctx, req) => exp.requestExport(ctx, req.body)));
+  app.get("/api/exports", h(async (ctx) => exp.listExports(ctx)));
+  app.get("/api/exports/:id/download", h<{ id: string }>(async (ctx, req) => exp.downloadExport(ctx, storage, req.params.id)));
+
+  // Кабинет клиента
+  app.get("/api/portal", h(async (ctx) => portal.portalHome(ctx)));
+  app.get("/api/portal/accounts/:id", h<{ id: string }>(async (ctx, req) => portal.portalAccount(ctx, req.params.id)));
 
   // LinkedIn OAuth. Работает только при заданных LINKEDIN_CLIENT_ID/SECRET/REDIRECT_URI.
   const pendingStates = new Map<string, { accountId: string; userId: string; exp: number }>();
   app.get("/api/accounts/:id/oauth/start", h<{ id: string }>(async (ctx, req, reply) => {
     const cid = process.env.LINKEDIN_CLIENT_ID, redirect = process.env.LINKEDIN_REDIRECT_URI;
-    if (!cid || !redirect) throw Object.assign(new Error("Интеграция LinkedIn не настроена: используйте assisted-процесс"), { status: 409 });
-    const a = await import("../services/context").then((m) => m.accountScope(ctx.db, ctx, req.params.id));
-    (await import("../services/context")).requireOp(ctx, "manage_connection", { clientId: a.client_id, accountId: a.id });
+    if (!cid || !redirect) throw Object.assign(new Error("Интеграция LinkedIn не настроена: используйте публикацию через человека"), { status: 409 });
+    const a = await accountScope(ctx.db, ctx, req.params.id);
+    requireOp(ctx, "manage_connection", { clientId: a.client_id, accountId: a.id });
+    for (const [k, v] of pendingStates) if (v.exp < Date.now()) pendingStates.delete(k);
     const state = randomBytes(24).toString("hex");
     pendingStates.set(state, { accountId: a.id, userId: ctx.actor.id, exp: Date.now() + 10 * 60_000 });
     const scopes = a.kind === "company_page" ? "openid profile w_organization_social r_organization_social rw_organization_admin" : "openid profile w_member_social";
@@ -127,10 +293,11 @@ export function buildApp(deps: AppDeps) {
     const t: any = await tok.json();
     const info: any = await (await fetch("https://api.linkedin.com/v2/userinfo", { headers: { Authorization: `Bearer ${t.access_token}` } })).json();
     const ref = `linkedin/${st.accountId}/${Date.now()}`;
-    if (!deps.secrets.set) return reply.status(500).send("Хранилище секретов только для чтения");
+    if (!("set" in deps.secrets) || !deps.secrets.set) return reply.status(500).send("Хранилище секретов только для чтения");
     await deps.secrets.set(ref, t.access_token);
     const actor = await loadActor(deps.db, st.userId);
-    await acc.recordOAuthConnection({ db: deps.db, actor: actor! }, st.accountId, { external_subject: `urn:li:person:${info.sub}`, granted_scopes: String(t.scope ?? "").split(/[ ,]/).filter(Boolean), secret_ref: ref, expires_at: new Date(Date.now() + (t.expires_in ?? 0) * 1000).toISOString() });
+    if (!actor) return reply.status(401).send("Пользователь отключён");
+    await acc.recordOAuthConnection(actorCtx(deps.db, actor), st.accountId, { external_subject: `urn:li:person:${info.sub}`, granted_scopes: String(t.scope ?? "").split(/[ ,]/).filter(Boolean), secret_ref: ref, expires_at: new Date(Date.now() + (t.expires_in ?? 0) * 1000).toISOString() });
     return reply.redirect(`/#/accounts/${st.accountId}`);
   });
 

@@ -1,29 +1,23 @@
 /**
  * Отдельный процесс исполнителя (production, PostgreSQL). Несколько экземпляров безопасны:
- * захват задания — атомарный UPDATE ... WHERE status = 'queued'.
+ * захват задания — атомарный UPDATE ... WHERE status = 'queued', события помечаются обработанными.
  */
 import { hostname } from "node:os";
 import { openDb } from "../db/db";
-import { runDueJobs } from "../services/publishing";
-import { DbSecretStore } from "../services/secrets";
-import { DemoLinkedInAdapter, LinkedInHttpAdapter } from "../integrations/linkedin/adapter";
+import { createRuntime, workerContext } from "../runtime";
+import { workerTick } from "./tick";
 
 const db = await openDb();
-const adapter = process.env.LINKEDIN_ADAPTER === "http" ? new LinkedInHttpAdapter() : new DemoLinkedInAdapter();
-// Тот же интерфейс SecretStore можно заменить адаптером Vault / AWS Secrets Manager.
-const secrets = new DbSecretStore(db);
-const workerId = `${hostname()}:${process.pid}`;
+const rt = createRuntime(db);
+const ctx = workerContext(rt, `${hostname()}:${process.pid}`);
 const interval = Number(process.env.WORKER_INTERVAL_MS ?? 5000);
 let stopping = false;
 process.on("SIGTERM", () => { stopping = true; });
+process.on("SIGINT", () => { stopping = true; });
 
 while (!stopping) {
-  try {
-    const r = await runDueJobs({ db, adapter, secrets, workerId, memberDailyLimit: Number(process.env.MEMBER_DAILY_REQUEST_BUDGET ?? 100), apiVersion: process.env.LINKEDIN_API_VERSION });
-    if (r.length) console.log(JSON.stringify({ msg: "worker pass", results: r }));
-  } catch (e: any) {
-    console.error(JSON.stringify({ msg: "worker error", error: e.message }));
-  }
+  const report = await workerTick(ctx);
+  if (Object.values(report).some((v) => v && (typeof v !== "number" || v > 0) && !(Array.isArray(v) && !v.length))) console.log(JSON.stringify({ msg: "worker tick", report }));
   await new Promise((res) => setTimeout(res, interval));
 }
 await db.close();

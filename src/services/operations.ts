@@ -35,6 +35,8 @@ export async function agencyOverview(ctx: Ctx) {
 }
 
 export async function listTasks(ctx: Ctx, f: { mine?: boolean; status?: string } = {}) {
+  // Внутренние задачи команды клиенту не показываются.
+  if (ctx.actor.memberships.every((m) => m.role === "client" || m.role === "auditor")) return [];
   const vis = visibleAccountsFilter(ctx, "a", 2);
   const params: unknown[] = [ctx.actor.agency_id, ...vis.params];
   let where = `c.agency_id = $1 AND (t.account_id IS NULL AND ${agencyWide(ctx.actor.memberships)} OR ${vis.sql})`;
@@ -131,12 +133,12 @@ export async function generateWeeklyReport(ctx: Ctx, accountId: string, input: u
   requireOp(ctx, "export", { clientId: a.client_id, accountId });
   const d = z.object({ period_start: z.string(), period_end: z.string() }).parse(input);
   const q = ctx.db;
-  const p = [accountId, d.period_start, d.period_end];
+  const p = [accountId, d.period_start, d.period_end, a.timezone];
   const [published, tasksDone, actions, opportunities, pendingClient, next, metrics] = await Promise.all([
-    q.query(`SELECT ci.title, ep.url, ep.evidence_type, ep.published_at FROM external_publications ep JOIN content_items ci ON ci.id = ep.content_item_id WHERE ep.account_id = $1 AND ep.published_at::date BETWEEN $2 AND $3 ORDER BY ep.published_at`, p).then((r) => r.rows),
-    q.query(`SELECT title, type, completed_at FROM tasks WHERE account_id = $1 AND status = 'done' AND completed_at::date BETWEEN $2 AND $3`, p).then((r) => r.rows),
-    q.query(`SELECT action_type, origin, evidence_type, count(*)::int AS n FROM action_records WHERE account_id = $1 AND requested_at::date BETWEEN $2 AND $3 GROUP BY 1,2,3`, p).then((r) => r.rows),
-    q.query(`SELECT title, stage, attribution FROM opportunities WHERE account_id = $1 AND updated_at::date BETWEEN $2 AND $3`, p).then((r) => r.rows),
+    q.query(`SELECT ci.title, ep.url, ep.evidence_type, ep.published_at FROM external_publications ep JOIN content_items ci ON ci.id = ep.content_item_id WHERE ep.account_id = $1 AND (ep.published_at AT TIME ZONE $4)::date BETWEEN $2 AND $3 ORDER BY ep.published_at`, p).then((r) => r.rows),
+    q.query(`SELECT title, type, completed_at FROM tasks WHERE account_id = $1 AND status = 'done' AND (completed_at AT TIME ZONE $4)::date BETWEEN $2 AND $3`, p).then((r) => r.rows),
+    q.query(`SELECT action_type, origin, evidence_type, count(*)::int AS n FROM action_records WHERE account_id = $1 AND (requested_at AT TIME ZONE $4)::date BETWEEN $2 AND $3 GROUP BY 1,2,3`, p).then((r) => r.rows),
+    q.query(`SELECT title, stage, attribution FROM opportunities WHERE account_id = $1 AND (updated_at AT TIME ZONE $4)::date BETWEEN $2 AND $3`, p).then((r) => r.rows),
     q.query(`SELECT ci.title FROM approval_requests r JOIN content_items ci ON ci.id = r.content_item_id WHERE ci.account_id = $1 AND r.stage = 'client' AND r.status = 'pending'`, [accountId]).then((r) => r.rows),
     q.query(`SELECT title, scheduled_at, scheduled_tz FROM content_items WHERE account_id = $1 AND state = 'scheduled' ORDER BY scheduled_at LIMIT 10`, [accountId]).then((r) => r.rows),
     postMetrics(ctx, accountId),
@@ -163,13 +165,16 @@ export async function getReport(ctx: Ctx, reportId: string) {
   if (!r) throw new NotFoundError("Отчёт не найден");
   if (r.account_id) await accountScope(ctx.db, ctx, r.account_id);
   requireOp(ctx, "view", { clientId: r.client_id, accountId: r.account_id });
+  const { hasInternalRole } = await import("./portal");
+  if (r.status !== "shared" && !hasInternalRole(ctx, { clientId: r.client_id, accountId: r.account_id })) throw new NotFoundError("Отчёт не найден");
   return r;
 }
 
 export async function auditLog(ctx: Ctx, f: { account_id?: string; limit?: number }) {
   if (f.account_id) {
     const a = await accountScope(ctx.db, ctx, f.account_id);
-    if (!can(ctx.actor.memberships, "view", { clientId: a.client_id, accountId: a.id }) && !can(ctx.actor.memberships, "view_audit", { clientId: a.client_id, accountId: a.id })) throw new NotFoundError("Нет доступа");
+    const { hasInternalRole } = await import("./portal");
+    if (!hasInternalRole(ctx, { clientId: a.client_id, accountId: a.id })) throw new NotFoundError("Нет доступа");
     return (await ctx.db.query("SELECT e.*, u.display_name AS actor_name FROM audit_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.account_id = $1 ORDER BY e.id DESC LIMIT $2", [f.account_id, f.limit ?? 200])).rows;
   }
   requireOp(ctx, "view_audit", {});
@@ -180,6 +185,8 @@ export async function addOpportunity(ctx: Ctx, accountId: string, input: unknown
   const a = await accountScope(ctx.db, ctx, accountId);
   requireOp(ctx, "enter_metrics", { clientId: a.client_id, accountId });
   const d = z.object({ pipeline: z.enum(["business", "job_search"]), stage: z.string(), title: z.string().min(1), attribution: z.enum(["confirmed_click", "client_mark", "crm_event", "manager_assumption"]) }).parse(input);
+  const { PIPELINES } = await import("./engagement");
+  if (!(PIPELINES[d.pipeline] as readonly string[]).includes(d.stage)) throw new ValidationError("Этап не относится к выбранной воронке");
   const r = (await ctx.db.query("INSERT INTO opportunities(client_id, account_id, pipeline, stage, title, attribution, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *", [a.client_id, accountId, d.pipeline, d.stage, d.title, d.attribution, ctx.actor.id])).rows[0];
   await audit(ctx.db, ctx, { action: "opportunity.created", entity_type: "opportunity", entity_id: r.id, client_id: a.client_id, account_id: accountId });
   return r;

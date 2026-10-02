@@ -16,6 +16,7 @@ export async function createPgliteDb(dataDir?: string): Promise<Db> {
   if (dataDir) await mkdir(dataDir, { recursive: true });
   const pg = new PGlite(dataDir);
   await pg.waitReady;
+  await pg.exec("SET TIME ZONE 'UTC'");
   // PGlite однопоточен: сериализуем транзакции через очередь.
   let chain: Promise<unknown> = Promise.resolve();
   const db: Db = {
@@ -33,7 +34,7 @@ export async function createPgliteDb(dataDir?: string): Promise<Db> {
 /** Продакшн: пул node-postgres по DATABASE_URL. */
 export async function createPgDb(url: string): Promise<Db> {
   const { default: pg } = await import("pg");
-  const pool = new pg.Pool({ connectionString: url, max: 20 });
+  const pool = new pg.Pool({ connectionString: url, max: Number(process.env.DB_POOL_MAX ?? 20), options: "-c TimeZone=UTC" });
   return {
     query: (sql, params) => pool.query(sql, params as any[]) as any,
     async tx(fn) {
@@ -77,12 +78,46 @@ export async function migrate(db: Db): Promise<string[]> {
     });
     applied.push(f);
   }
+  // Политики RLS пересчитываются после каждой миграции: новые таблицы сразу изолированы.
+  const hasRls = (await db.query("SELECT 1 FROM pg_proc WHERE proname = 'apply_rls'")).rows.length;
+  if (hasRls) await db.query("SELECT apply_rls()");
   return applied;
 }
 
-function splitSql(sql: string): string[] {
-  return sql
-    .split(/;\s*(?:\n|$)/)
-    .map((s) => s.replace(/^\s*--.*$/gm, "").trim())
-    .filter(Boolean);
+/** Делит SQL на операторы с учётом $$-блоков, строк и комментариев. */
+export function splitSql(sql: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let i = 0;
+  let dollar: string | null = null;
+  let quote = false;
+  while (i < sql.length) {
+    const ch = sql[i];
+    if (!dollar && !quote && ch === "-" && sql[i + 1] === "-") {
+      const nl = sql.indexOf("\n", i);
+      i = nl === -1 ? sql.length : nl;
+      continue;
+    }
+    if (!quote && ch === "$") {
+      const m = /^\$[A-Za-z_]*\$/.exec(sql.slice(i));
+      if (m) {
+        if (dollar === null) dollar = m[0];
+        else if (dollar === m[0]) dollar = null;
+        cur += m[0];
+        i += m[0].length;
+        continue;
+      }
+    }
+    if (!dollar && ch === "'") quote = !quote;
+    if (!dollar && !quote && ch === ";") {
+      if (cur.trim()) out.push(cur.trim());
+      cur = "";
+      i++;
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
 }

@@ -15,6 +15,8 @@ export async function ensureReferenceData(db: Db) {
     ["ai_executions", "AI-адаптер", "Контроль качества и стоимости", "Владелец, редактор", 180, "Вывод AI удаляется вместе с контентом клиента"],
   ];
   for (const p of policies) await db.query("INSERT INTO retention_policies VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING", p);
+  const { seedBuiltinWorkflows } = await import("../services/workflows");
+  for (const a of (await db.query("SELECT id FROM agencies")).rows) await seedBuiltinWorkflows(db, a.id, null);
 }
 
 /** Демо-данные. Не содержат метрик LinkedIn: показатели появляются только из ручного ввода с источником. */
@@ -81,6 +83,8 @@ export async function seedDemo(db: Db) {
   await item(c1, a1, "Что я понял о данных с оборудования", "draft", "Черновик. [НУЖНО ОТ КЛИЕНТА: пример с цифрами по простоям]", u.author);
   await item(c2, a3, "Разбор: как не потерять клиента на онбординге", "client_review", "Разбор типичной ошибки онбординга B2B-клиента...", u.author2);
   await db.query("INSERT INTO tasks(client_id, account_id, type, title, assignee_id, due_at, estimate_minutes) VALUES ($1,$2,'profile_audit','Аудит профиля: заголовок и About',$3, now() - interval '1 day', 90), ($1,$2,'interview','Интервью CEO по теме Q4',$4, now() + interval '2 days', 60)", [c1, a1, u.manager, u.strategist]);
+  const { seedBuiltinWorkflows } = await import("../services/workflows");
+  await seedBuiltinWorkflows(db, ag, u.ops);
   await db.query("INSERT INTO time_entries(client_id, account_id, user_id, minutes, work_date) VALUES ($1,$2,$3,240,current_date - 3),($1,$2,$4,180,current_date - 2)", [c1, a1, u.author, u.manager]);
   return { agency_id: ag, seeded: true, users: u };
 }

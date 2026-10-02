@@ -1,18 +1,34 @@
 import type { Db, Queryable } from "../db/db";
+import { scopedDb, type DbScope } from "../db/scope";
 import { agencyWide, allowedOperations, can, ForbiddenError, type Membership, type Operation } from "../core/permissions";
 
-export interface Actor { id: string; agency_id: string; display_name: string; memberships: Membership[] }
+export interface Actor { id: string; agency_id: string; display_name: string; memberships: Membership[]; scope: DbScope }
 export interface Ctx { db: Db; actor: Actor }
 
 export class NotFoundError extends Error { status = 404; }
 export class ValidationError extends Error { status = 422; constructor(msg: string, public details?: unknown) { super(msg); } }
 export class ConflictError extends Error { status = 409; constructor(msg: string, public details?: unknown) { super(msg); } }
 
+/** Загружает пользователя системным подключением (до того, как известна его область). */
 export async function loadActor(db: Queryable, userId: string): Promise<Actor | null> {
   const u = (await db.query("SELECT id, agency_id, display_name FROM users WHERE id = $1 AND is_active", [userId])).rows[0];
   if (!u) return null;
   const memberships = (await db.query<Membership>("SELECT role, scope_client_id, scope_account_id, revoked_at FROM memberships WHERE user_id = $1 AND revoked_at IS NULL", [userId])).rows;
-  return { ...u, memberships };
+  const accountClients = (await db.query<{ client_id: string }>(
+    "SELECT DISTINCT a.client_id FROM memberships m JOIN managed_accounts a ON a.id = m.scope_account_id WHERE m.user_id = $1 AND m.revoked_at IS NULL", [userId])).rows.map((r) => r.client_id);
+  const clientIds = [...new Set([...memberships.filter((m) => m.scope_client_id).map((m) => m.scope_client_id as string), ...accountClients])];
+  const scope: DbScope = {
+    agencyId: u.agency_id,
+    allClients: agencyWide(memberships),
+    clientIds,
+    audit: memberships.some((m) => m.role === "auditor" || m.role === "owner"),
+  };
+  return { ...u, memberships, scope };
+}
+
+/** Контекст запроса: все запросы пользователя идут через RLS-обёртку. */
+export function actorCtx(base: Db, actor: Actor): Ctx {
+  return { db: scopedDb(base, actor.scope), actor };
 }
 
 /** Клиент выводится из аккаунта на сервере: client_id из запроса не принимается на веру. */

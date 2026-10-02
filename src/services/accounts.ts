@@ -173,6 +173,7 @@ export async function markConnectionRevoked(ctx: Ctx, accountId: string) {
     await q.query(`INSERT INTO tasks(client_id, account_id, type, title, definition_of_done, source_ref, priority, priority_reason)
                    VALUES ($1,$2,'reconnect','Переподключить LinkedIn','Владелец прошёл OAuth, возможности обновлены',$3,0.9,'Внешние задания остановлены')
                    ON CONFLICT DO NOTHING`, [a.client_id, accountId, `reconnect:${accountId}`]);
+    await emit(q, "connection.revoked", a.client_id, { account_id: accountId }, `revoked:${accountId}:${Date.now()}`);
     await audit(q, ctx, { action: "connection.revoked", entity_type: "managed_account", entity_id: accountId, client_id: a.client_id, account_id: accountId, details: { paused_jobs: r.rows.length } });
     return { paused_jobs: r.rows.length };
   });
@@ -252,6 +253,8 @@ export async function addKnowledge(ctx: Ctx, accountId: string, input: unknown) 
 export async function accountWorkspace(ctx: Ctx, accountId: string) {
   const a = await accountScope(ctx.db, ctx, accountId);
   requireOp(ctx, "view", { clientId: a.client_id, accountId });
+  const { hasInternalRole } = await import("./portal");
+  if (!hasInternalRole(ctx, { clientId: a.client_id, accountId })) throw Object.assign(new Error("Рабочее пространство доступно команде агентства. Клиенту доступен кабинет клиента"), { status: 403 });
   const q = ctx.db;
   const [account, strategies, capabilities, consents, connection, content, tasks, actions, knowledge, claims, metrics, reports] = await Promise.all([
     q.query("SELECT a.*, c.name AS client_name FROM managed_accounts a JOIN clients c ON c.id = a.client_id WHERE a.id = $1", [accountId]).then((r) => r.rows[0]),
