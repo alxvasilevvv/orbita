@@ -7,6 +7,8 @@ export interface Queryable {
 }
 export interface Db extends Queryable {
   tx<T>(fn: (q: Queryable) => Promise<T>): Promise<T>;
+  /** Транзакция с преамбулой без параметров, отправленной вместе с BEGIN одним обращением к базе. */
+  txWith?<T>(prelude: string, fn: (q: Queryable) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -26,6 +28,11 @@ export async function createPgliteDb(dataDir?: string): Promise<Db> {
       chain = run.catch(() => undefined);
       return run;
     },
+    txWith: (prelude, fn) => {
+      const run = chain.then(() => pg.transaction(async (t) => { await t.exec(prelude); return fn({ query: (s, p) => t.query(s, p as any[]) as any }); }));
+      chain = run.catch(() => undefined);
+      return run;
+    },
     close: () => pg.close(),
   };
   return db;
@@ -34,9 +41,23 @@ export async function createPgliteDb(dataDir?: string): Promise<Db> {
 /** Продакшн: пул node-postgres по DATABASE_URL. */
 export async function createPgDb(url: string): Promise<Db> {
   const { default: pg } = await import("pg");
-  const pool = new pg.Pool({ connectionString: url, max: Number(process.env.DB_POOL_MAX ?? 20), options: "-c TimeZone=UTC" });
+  const pool = new pg.Pool({ connectionString: url, max: Number(process.env.DB_POOL_MAX ?? 30), options: "-c TimeZone=UTC" });
   return {
     query: (sql, params) => pool.query(sql, params as any[]) as any,
+    async txWith(prelude, fn) {
+      const c = await pool.connect();
+      try {
+        await c.query(`BEGIN; ${prelude}`);
+        const r = await fn({ query: (s, p) => c.query(s, p as any[]) as any });
+        await c.query("COMMIT");
+        return r;
+      } catch (e) {
+        await c.query("ROLLBACK");
+        throw e;
+      } finally {
+        c.release();
+      }
+    },
     async tx(fn) {
       const c = await pool.connect();
       try {

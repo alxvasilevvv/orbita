@@ -1,0 +1,2 @@
+{ "_source": "Images API initializeUpload (Microsoft Learn, проверено 2026-10-02)", "status": 200, "headers": {},
+  "body": { "value": { "uploadUrlExpiresAt": 1650567510704, "uploadUrl": "https://www.linkedin.com/dms-uploads/sp/v2/D4E10AQ/uploadedImage/0?ca=vector_feedshare&cn=uploads&iri=B01-77", "image": "urn:li:image:C4E10AQFoyyAjHPMQuQ" } } }

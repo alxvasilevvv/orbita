@@ -1,0 +1,1 @@
+{ "_source": "Нет разрешения", "status": 403, "headers": {}, "body": { "status": 403, "serviceErrorCode": 100, "code": "ACCESS_DENIED", "message": "Not enough permissions to access: partnerApiPostsExternal.CREATE.20260801" } }

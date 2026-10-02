@@ -1,0 +1,1 @@
+{ "_source": "Превышение квоты (API Rate Limiting)", "status": 429, "headers": { "retry-after": "120" }, "body": { "status": 429, "message": "Resource level throttle APPLICATION DAY limit for calls to this resource is reached." } }

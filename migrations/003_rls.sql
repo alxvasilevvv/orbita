@@ -8,9 +8,14 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_user') THEN
     CREATE ROLE app_user NOLOGIN;
   END IF;
+  IF NOT pg_has_role(current_user, 'app_user', 'MEMBER') THEN
+    BEGIN
+      EXECUTE format('GRANT app_user TO %I', current_user);
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE EXCEPTION 'Роль app_user уже существует в кластере, а у пользователя % нет права её выдать. Администратор БД должен выполнить: GRANT app_user TO %;', current_user, current_user;
+    END;
+  END IF;
 END $$;
-
-GRANT app_user TO CURRENT_USER;
 
 CREATE OR REPLACE FUNCTION app_agency() RETURNS uuid LANGUAGE sql STABLE AS $$
   SELECT nullif(current_setting('app.agency_id', true), '')::uuid

@@ -8,12 +8,20 @@ export interface DbScope {
   audit: boolean;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Преамбула транзакции: параметры области и переключение на роль app_user одним оператором.
+ * Значения — только проверенные UUID и флаги, поэтому безопасно подставляются литералами.
+ */
+export function scopePrelude(s: DbScope): string {
+  if (!UUID.test(s.agencyId) || !s.clientIds.every((c) => UUID.test(c))) throw new Error("Некорректная область доступа");
+  return `SELECT set_config('app.agency_id', '${s.agencyId}', true), set_config('app.all_clients', '${s.allClients ? "on" : "off"}', true), ` +
+    `set_config('app.client_ids', '${s.clientIds.join(",")}', true), set_config('app.audit', '${s.audit ? "on" : "off"}', true), set_config('role', 'app_user', true)`;
+}
+
 async function enter(q: Queryable, s: DbScope) {
-  await q.query(
-    "SELECT set_config('app.agency_id', $1, true), set_config('app.all_clients', $2, true), set_config('app.client_ids', $3, true), set_config('app.audit', $4, true)",
-    [s.agencyId, s.allClients ? "on" : "off", s.clientIds.join(","), s.audit ? "on" : "off"],
-  );
-  await q.query("SET LOCAL ROLE app_user");
+  await q.query(scopePrelude(s));
 }
 
 /**
@@ -21,9 +29,11 @@ async function enter(q: Queryable, s: DbScope) {
  * с параметрами области. Даже ошибка в сервисном слое не откроет данные чужого клиента.
  */
 export function scopedDb(base: Db, scope: DbScope): Db {
+  const prelude = scopePrelude(scope);
+  const tx = <T>(fn: (q: Queryable) => Promise<T>) => base.txWith ? base.txWith(prelude, fn) : base.tx(async (q) => { await enter(q, scope); return fn(q); });
   return {
-    query: (sql, params) => base.tx(async (q) => { await enter(q, scope); return q.query(sql, params); }),
-    tx: (fn) => base.tx(async (q) => { await enter(q, scope); return fn(q); }),
+    query: (sql, params) => tx((q) => q.query(sql, params)),
+    tx,
     close: () => base.close(),
   };
 }

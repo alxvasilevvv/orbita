@@ -34,7 +34,7 @@ export async function agencyOverview(ctx: Ctx) {
   return { production, team_load: load, finance, finance_note: finance ? "Себестоимость = трудозатраты × внутренняя ставка + прямые расходы (AI). Накладные расходы распределяются отдельно." : null };
 }
 
-export async function listTasks(ctx: Ctx, f: { mine?: boolean; status?: string } = {}) {
+export async function listTasks(ctx: Ctx, f: { mine?: boolean; status?: string; limit?: number } = {}) {
   // Внутренние задачи команды клиенту не показываются.
   if (ctx.actor.memberships.every((m) => m.role === "client" || m.role === "auditor")) return [];
   const vis = visibleAccountsFilter(ctx, "a", 2);
@@ -42,9 +42,12 @@ export async function listTasks(ctx: Ctx, f: { mine?: boolean; status?: string }
   let where = `c.agency_id = $1 AND (t.account_id IS NULL AND ${agencyWide(ctx.actor.memberships)} OR ${vis.sql})`;
   if (f.mine) { params.push(ctx.actor.id); where += ` AND t.assignee_id = $${params.length}`; }
   if (f.status) { params.push(f.status); where += ` AND t.status = $${params.length}`; } else where += " AND t.status IN ('open','in_progress','blocked')";
-  const rows = (await ctx.db.query(`SELECT t.*, a.display_name AS account_name, c.name AS client_name, u.display_name AS assignee_name
+  // Сначала задачи с наибольшим приоритетом и ближайшим сроком; список ограничен, подробности по запросу.
+  params.push(Math.min(f.limit ?? 200, 500));
+  const rows = (await ctx.db.query(`SELECT t.id, t.client_id, t.account_id, t.type, t.title, left(t.details, 2000) AS details, t.assignee_id, t.due_at, t.estimate_minutes, t.priority, t.priority_reason, t.status, t.created_at,
+           a.display_name AS account_name, c.name AS client_name, u.display_name AS assignee_name
       FROM tasks t JOIN clients c ON c.id = t.client_id LEFT JOIN managed_accounts a ON a.id = t.account_id LEFT JOIN users u ON u.id = t.assignee_id
-     WHERE ${where} ORDER BY t.due_at NULLS LAST LIMIT 500`, params)).rows;
+     WHERE ${where} ORDER BY t.priority DESC NULLS LAST, t.due_at NULLS LAST LIMIT $${params.length}`, params)).rows;
   return rows.map((t: any) => {
     const p = t.priority != null ? { score: Number(t.priority), reason: t.priority_reason } : taskPriority({ due: t.due_at ? new Date(t.due_at) : null, impact: 0.5, blocker_severity: t.type.includes("unknown") || t.type.includes("reconnect") ? 1 : 0.2, blockers: [] });
     return { ...t, priority_score: p.score, priority_reason: p.reason };

@@ -11,19 +11,27 @@ export class ConflictError extends Error { status = 409; constructor(msg: string
 
 /** Загружает пользователя системным подключением (до того, как известна его область). */
 export async function loadActor(db: Queryable, userId: string): Promise<Actor | null> {
-  const u = (await db.query("SELECT id, agency_id, display_name FROM users WHERE id = $1 AND is_active", [userId])).rows[0];
+  // Одно обращение к базе: пользователь, роли, клиенты его аккаунтов и клиенты агентства.
+  const u = (await db.query(`
+    SELECT u.id, u.agency_id, u.display_name,
+      coalesce((SELECT json_agg(json_build_object('role', m.role, 'scope_client_id', m.scope_client_id, 'scope_account_id', m.scope_account_id, 'revoked_at', NULL))
+                  FROM memberships m WHERE m.user_id = u.id AND m.revoked_at IS NULL), '[]') AS memberships,
+      coalesce((SELECT array_agg(DISTINCT a.client_id) FROM memberships m JOIN managed_accounts a ON a.id = m.scope_account_id
+                 WHERE m.user_id = u.id AND m.revoked_at IS NULL), '{}') AS account_clients,
+      coalesce((SELECT array_agg(c.id) FROM clients c WHERE c.agency_id = u.agency_id), '{}') AS agency_clients
+      FROM users u WHERE u.id = $1 AND u.is_active`, [userId])).rows[0];
   if (!u) return null;
-  const memberships = (await db.query<Membership>("SELECT role, scope_client_id, scope_account_id, revoked_at FROM memberships WHERE user_id = $1 AND revoked_at IS NULL", [userId])).rows;
-  const accountClients = (await db.query<{ client_id: string }>(
-    "SELECT DISTINCT a.client_id FROM memberships m JOIN managed_accounts a ON a.id = m.scope_account_id WHERE m.user_id = $1 AND m.revoked_at IS NULL", [userId])).rows.map((r) => r.client_id);
-  const clientIds = [...new Set([...memberships.filter((m) => m.scope_client_id).map((m) => m.scope_client_id as string), ...accountClients])];
+  const memberships: Membership[] = typeof u.memberships === "string" ? JSON.parse(u.memberships) : u.memberships;
+  const wide = agencyWide(memberships);
+  // Для ролей уровня агентства в область попадают все клиенты агентства: политика RLS проверяет членство в списке.
+  const clientIds = [...new Set([...(wide ? u.agency_clients : []), ...memberships.filter((m) => m.scope_client_id).map((m) => m.scope_client_id as string), ...u.account_clients])] as string[];
   const scope: DbScope = {
     agencyId: u.agency_id,
-    allClients: agencyWide(memberships),
+    allClients: wide,
     clientIds,
     audit: memberships.some((m) => m.role === "auditor" || m.role === "owner"),
   };
-  return { ...u, memberships, scope };
+  return { id: u.id, agency_id: u.agency_id, display_name: u.display_name, memberships, scope };
 }
 
 /** Контекст запроса: все запросы пользователя идут через RLS-обёртку. */

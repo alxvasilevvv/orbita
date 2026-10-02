@@ -1,11 +1,31 @@
-import { createPgliteDb, migrate, type Db } from "../src/db/db";
+import { createPgliteDb, createPgDb, migrate, type Db } from "../src/db/db";
+import { randomBytes } from "node:crypto";
 import { seedDemo } from "../src/db/seed";
 import { actorCtx, loadActor, type Ctx } from "../src/services/context";
 import { MemorySecretStore } from "../src/services/publishing";
 import { DemoLinkedInAdapter } from "../src/integrations/linkedin/adapter";
 
+/** По умолчанию PGlite; с TEST_PG_ADMIN_URL каждый тест получает отдельную базу настоящего PostgreSQL. */
+async function freshDb(): Promise<Db> {
+  const admin = process.env.TEST_PG_ADMIN_URL;
+  if (!admin) return createPgliteDb();
+  const { default: pg } = await import("pg");
+  const name = `t_${randomBytes(6).toString("hex")}`;
+  const c = new pg.Client({ connectionString: admin });
+  await c.connect(); await c.query(`CREATE DATABASE ${name}`); await c.end();
+  const url = new URL(admin); url.pathname = `/${name}`;
+  const db = await createPgDb(url.toString());
+  const close = db.close;
+  db.close = async () => {
+    await close();
+    const d = new pg.Client({ connectionString: admin });
+    await d.connect(); await d.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`); await d.end();
+  };
+  return db;
+}
+
 export async function setup() {
-  const db: Db = await createPgliteDb();
+  const db: Db = await freshDb();
   await migrate(db);
   const seed: any = await seedDemo(db);
   const u = seed.users as Record<string, string>;

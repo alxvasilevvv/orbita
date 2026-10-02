@@ -190,7 +190,7 @@ export function buildApp(deps: AppDeps) {
   app.get("/api/accounts/:id/onboarding", h<{ id: string }>(async (ctx, req) => onb.onboardingStatus(ctx, req.params.id)));
   app.get("/api/accounts/:id/profile-audits", h<{ id: string }>(async (ctx, req) => onb.listAudits(ctx, req.params.id)));
   app.post("/api/accounts/:id/profile-audits", h<{ id: string }>(async (ctx, req) => onb.createProfileAudit(ctx, req.params.id, req.body)));
-  app.get("/api/calendar", h(async (ctx, req) => cal.getCalendar(ctx, { from: req.query.from ?? "", to: req.query.to ?? "", account_id: req.query.account_id })));
+  app.get("/api/calendar", h(async (ctx, req) => cal.getCalendar(ctx, { from: req.query.from ?? "", to: req.query.to ?? "", account_id: req.query.account_id, mine: req.query.mine === "1" })));
   app.post("/api/accounts/:id/plan-month", h<{ id: string }>(async (ctx, req) => cal.planMonth(ctx, req.params.id, req.body)));
   app.get("/api/accounts/:id/window-stats", h<{ id: string }>(async (ctx, req) => cal.windowStats(ctx, req.params.id)));
 
@@ -234,7 +234,7 @@ export function buildApp(deps: AppDeps) {
   app.get("/api/ai/quality", h(async (ctx) => ai.aiQuality(ctx)));
 
   // Задачи, сценарии, уведомления
-  app.get("/api/tasks", h(async (ctx, req) => ops.listTasks(ctx, { mine: req.query.mine === "1", status: req.query.status })));
+  app.get("/api/tasks", h(async (ctx, req) => ops.listTasks(ctx, { mine: req.query.mine === "1", status: req.query.status, limit: Number(req.query.limit) || undefined })));
   app.patch("/api/tasks/:id", h<{ id: string }>(async (ctx, req) => ops.updateTask(ctx, req.params.id, req.body)));
   app.post("/api/bulk/tasks", h(async (ctx, req) => acc.bulkCreateTasks(ctx, req.body)));
   app.get("/api/workflows", h(async (ctx) => wf.listWorkflows(ctx)));

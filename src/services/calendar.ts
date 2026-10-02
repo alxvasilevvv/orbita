@@ -128,13 +128,14 @@ export async function planMonth(ctx: Ctx, accountId: string, input: unknown, now
 }
 
 /** Календарь: запланированные, плановые и опубликованные материалы видимых аккаунтов. */
-export async function getCalendar(ctx: Ctx, f: { from: string; to: string; account_id?: string }) {
+export async function getCalendar(ctx: Ctx, f: { from: string; to: string; account_id?: string; mine?: boolean }) {
   const from = new Date(f.from), to = new Date(f.to);
   if (isNaN(+from) || isNaN(+to) || +to - +from > 93 * 864e5) throw new ValidationError("Период не более 3 месяцев");
   const vis = visibleAccountsFilter(ctx, "a", 4);
   const params: unknown[] = [ctx.actor.agency_id, from.toISOString(), to.toISOString(), ...vis.params];
   let extra = "";
   if (f.account_id) { await accountScope(ctx.db, ctx, f.account_id); params.push(f.account_id); extra = ` AND a.id = $${params.length}`; }
+  if (f.mine) { params.push(ctx.actor.id); extra += ` AND (a.manager_id = $${params.length} OR EXISTS (SELECT 1 FROM account_assignments x WHERE x.account_id = a.id AND x.user_id = $${params.length}))`; }
   return (await ctx.db.query(`
     SELECT ci.id, ci.title, ci.state, ci.pillar, ci.format, ci.campaign, ci.scheduled_tz,
            coalesce(ep.published_at, ci.scheduled_at, ci.planned_for) AS at,
