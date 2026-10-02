@@ -1,0 +1,36 @@
+{
+  "name": "agency-linkedin-os",
+  "version": "1.0.0",
+  "description": "Agency LinkedIn OS: внутренняя платформа SMM-агентства",
+  "scripts": {
+    "dev": "npm run build:ui && tsx src/server/main.ts",
+    "worker": "tsx src/worker/main.ts",
+    "build:ui": "esbuild src/ui/main.tsx --bundle --outfile=public/app.js --jsx=automatic --minify --define:process.env.NODE_ENV=\\\"production\\\"",
+    "migrate": "tsx src/db/migrate-cli.ts",
+    "seed": "tsx src/db/seed-cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "fastify": "^5.12.5",
+    "pg": "^8.23.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "private": true,
+  "type": "module"
+}

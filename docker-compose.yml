@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgres:17
+    environment: { POSTGRES_PASSWORD: dev, POSTGRES_DB: agency }
+    ports: ["5432:5432"]
+    volumes: [pg:/var/lib/postgresql/data]
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://postgres:dev@db:5432/agency
+      NODE_ENV: development
+      AUTH_MODE: dev
+      INLINE_WORKER: "0"
+      SECRETS_KEY: change-me
+    ports: ["3000:3000"]
+    depends_on: [db]
+  worker:
+    build: .
+    command: ["npx", "tsx", "src/worker/main.ts"]
+    environment:
+      DATABASE_URL: postgres://postgres:dev@db:5432/agency
+      SECRETS_KEY: change-me
+    depends_on: [app]
+volumes: { pg: {} }
