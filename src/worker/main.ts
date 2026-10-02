@@ -1,6 +1,6 @@
 /**
  * Отдельный процесс исполнителя (production, PostgreSQL). Несколько экземпляров безопасны:
- * захват задания — атомарный UPDATE ... WHERE status = 'queued', события помечаются обработанными.
+ * захват задания: атомарный UPDATE ... WHERE status = 'queued', события помечаются обработанными.
  */
 import { hostname } from "node:os";
 import { openDb } from "../db/db";

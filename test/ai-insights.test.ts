@@ -80,7 +80,7 @@ describe("контракт AI-провайдеров (без сети)", () => {
     const r = await p.generate({ role: "author", system: "s", user: "u", accountId: "acc-1" });
     expect(r.output.draft).toBe("d");
     expect(r.usage?.tokensIn).toBe(120);
-    expect(r.costUsd).toBeNull(); // цена провайдера не задана — стоимость не выдумывается
+    expect(r.costUsd).toBeNull(); // цена провайдера не задана: стоимость не выдумывается
   });
   it("ответ для другого аккаунта или не по схеме отклоняется", () => {
     expect(() => parseAiJson(good("other"), "acc-1")).toThrow(/другому аккаунту/);

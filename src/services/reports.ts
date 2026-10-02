@@ -97,7 +97,8 @@ export async function agencyReport(ctx: Ctx, input: unknown) {
     if (x.revisions > 3) reasons.push(`Много доработок: ${x.revisions}`);
     if (x.unrated_entries) reasons.push(`Нет внутренней ставки у части записей времени (${x.unrated_entries}): себестоимость занижена`);
     if (x.unpriced_ai_runs) reasons.push(`Цена AI-провайдера не задана для ${x.unpriced_ai_runs} вызовов`);
-    return { ...x, hours, overhead, cost, margin: x.revenue ? (x.revenue - cost) / x.revenue : null, overrun_reasons: reasons };
+    if (x.minutes === 0) reasons.push("Время за месяц не учтено: маржа не рассчитывается");
+    return { ...x, hours, overhead, cost, margin: x.revenue && x.minutes > 0 ? (x.revenue - cost) / x.revenue : null, overrun_reasons: reasons };
   });
   const load = (await ctx.db.query(`
     SELECT u.display_name, u.weekly_capacity_hours::float AS capacity, coalesce(sum(te.minutes), 0)::int AS minutes
@@ -106,7 +107,7 @@ export async function agencyReport(ctx: Ctx, input: unknown) {
      GROUP BY u.id ORDER BY u.display_name`, [ctx.actor.agency_id, r.start.toISOString().slice(0, 10), r.end.toISOString().slice(0, 10)])).rows.map((u: any) => ({ ...u, utilization: u.capacity ? u.minutes / 60 / (u.capacity * 4.33) : null }));
   return {
     month, clients, team: load,
-    totals: { revenue: clients.reduce((s, c) => s + (c.revenue ?? 0), 0), cost: clients.reduce((s, c) => s + c.cost, 0), hours: clients.reduce((s, c) => s + c.hours, 0) },
+    totals: { revenue: clients.reduce((s, c) => s + (c.revenue ?? 0), 0), cost: clients.reduce((s, c) => s + c.cost, 0), hours: clients.reduce((s, c) => s + c.hours, 0), margin_computable: clients.some((c) => c.minutes > 0) },
     formula: "Себестоимость = минуты × внутренняя ставка / 60 + AI + инфраструктура × доля аккаунтов клиента",
     notes: Number.isFinite(infra) ? [] : ["INFRA_COST_MONTH_USD не задан: накладные расходы не распределены"],
   };

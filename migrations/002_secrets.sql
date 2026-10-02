@@ -1,5 +1,5 @@
 -- Зашифрованное хранилище токенов (AES-256-GCM, ключ вне БД: SECRETS_KEY / KMS).
--- В production рекомендуется внешний менеджер секретов; таблица — совместимый fallback.
+-- В production рекомендуется внешний менеджер секретов; таблица: совместимый fallback.
 CREATE TABLE encrypted_secrets (
   ref text PRIMARY KEY,
   iv bytea NOT NULL,

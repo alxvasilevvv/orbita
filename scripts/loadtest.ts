@@ -2,7 +2,7 @@
  * Воспроизводимый нагрузочный тест: N аккаунтов, 50 одновременных пользователей,
  * типовые чтения API. Использование: npx tsx scripts/loadtest.ts 500 [длительность_с]
  * По умолчанию PGlite в памяти (однопоточный, поэтому результат консервативный);
- * с DATABASE_URL=postgres://… — на PostgreSQL.
+ * с DATABASE_URL=postgres://…: на PostgreSQL.
  */
 import { performance } from "node:perf_hooks";
 import { writeFileSync } from "node:fs";

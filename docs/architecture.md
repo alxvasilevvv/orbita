@@ -102,28 +102,28 @@ NULL не превращается в 0; накопительные снимки
 
 | Метод | Путь | Назначение | Идемпотентность |
 |---|---|---|---|
-| GET | /api/overview | Производственная сводка, загрузка, экономика | — |
-| GET | /api/accounts?q&attention&limit&offset | Реестр с причинами внимания (пагинация limit ≤ 500) | — |
-| POST | /api/clients, /api/accounts | Создание клиента и аккаунта | — |
-| GET | /api/accounts/:id | Рабочее пространство аккаунта и разрешённые операции | — |
+| GET | /api/overview | Производственная сводка, загрузка, экономика |: |
+| GET | /api/accounts?q&attention&limit&offset | Реестр с причинами внимания (пагинация limit ≤ 500) |: |
+| POST | /api/clients, /api/accounts | Создание клиента и аккаунта |: |
+| GET | /api/accounts/:id | Рабочее пространство аккаунта и разрешённые операции |: |
 | POST | /api/accounts/:id/capabilities/refresh | Перепроверка возможностей | Да |
 | POST | /api/accounts/:id/consents, /consents/:scope/revoke | Согласия | Отзыв да |
 | POST | /api/accounts/:id/connection/revoke | Отзыв подключения, остановка заданий | Да |
 | GET | /api/accounts/:id/oauth/start, /oauth/linkedin/callback | OAuth LinkedIn с `state` | state одноразовый |
-| POST | /api/accounts/:id/strategies, /strategies/:sid/approve | Версии стратегии | — |
-| POST | /api/accounts/:id/knowledge | Источник и подтверждённые факты | — |
-| POST | /api/accounts/:id/content | Новый материал | — |
+| POST | /api/accounts/:id/strategies, /strategies/:sid/approve | Версии стратегии |: |
+| POST | /api/accounts/:id/knowledge | Источник и подтверждённые факты |: |
+| POST | /api/accounts/:id/content | Новый материал |: |
 | POST | /api/content/:id/versions | Новая версия (`expected_row_version` для оптимистичной блокировки) | Одинаковый текст не создаёт версию |
-| POST | /api/content/:id/ai-draft | AI-черновик | — |
+| POST | /api/content/:id/ai-draft | AI-черновик |: |
 | POST | /api/content/:id/submit, /decision | Согласование конкретной версии | `approval_request_id` защищает от устаревших решений |
 | POST | /api/content/:id/schedule | Планирование (`local_time`, `ambiguity`) | Ключ задания на версию |
 | POST | /api/content/:id/mark-published, /resolve-unknown | Ручная отметка и разрешение неопределённости | Да |
-| GET/PATCH | /api/tasks, /api/tasks/:id | Задачи с приоритетом и проверкой ёмкости | — |
+| GET/PATCH | /api/tasks, /api/tasks/:id | Задачи с приоритетом и проверкой ёмкости |: |
 | POST | /api/bulk/tasks | Массовые задачи, `dry_run` показывает состав | Результат по каждому аккаунту |
 | POST | /api/accounts/:id/metrics | Импорт метрик с источником | `import_batch_key` |
-| POST | /api/accounts/:id/reports/weekly, GET /api/reports/:id | Отчёт клиенту | — |
+| POST | /api/accounts/:id/reports/weekly, GET /api/reports/:id | Отчёт клиенту |: |
 | POST | /api/publishing/pause | Пауза аккаунта, клиента, агентства | Да |
-| GET | /api/audit | Журнал аудита | — |
+| GET | /api/audit | Журнал аудита |: |
 
 ## 8. Модель полномочий AI
 
@@ -143,7 +143,7 @@ NULL не превращается в 0; накопительные снимки
 
 | Этап | Содержание | Зависимости | Критерий готовности | Трудозатраты (1 senior + 0,5 дизайнер) |
 |---|---|---|---|---|
-| 0 | Матрица возможностей, бюджет запросов, ADR, прототип одного сценария | — | **Сделано** в этом репозитории | — |
+| 0 | Матрица возможностей, бюджет запросов, ADR, прототип одного сценария |: | **Сделано** в этом репозитории |: |
 | 1 | Ядро: права, клиенты, стратегия, база знаний, контент, согласование, assisted-публикация, задачи, журнал, отчёт | Этап 0 | Вертикальный сценарий **сделан**; осталось: календарь-сетка, клиентский кабинет как отдельный вход, медиа | 3–5 недель на доработку до пилота |
 | 2 | OAuth, реестр возможностей, Posts API, медиа, квоты, переподключение, unknown | Приложение LinkedIn с Share on LinkedIn | Публикация в личный профиль через API на пилотных аккаунтах | 2–4 недели (ожидание одобрения LinkedIn не включено) |
 | 3 | Распределение, SLA, учёт времени, экономика, массовые операции, автоотчёты, конструктор сценариев | Этап 1 | Отчёт руководителю с маржой и перерасходом | 4–6 недель |

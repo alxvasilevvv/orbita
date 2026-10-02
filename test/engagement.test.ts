@@ -51,7 +51,7 @@ describe("взаимодействия", () => {
     expect(dup.block_reasons.join(" ")).toMatch(/Повтор/);
   });
 
-  it("требуется человеческое согласование конкретного текста, исполнение — ручная отметка, есть суточный лимит", async () => {
+  it("требуется человеческое согласование конкретного текста, исполнение: ручная отметка, есть суточный лимит", async () => {
     const a1 = await env.acct("John Smith (CEO)");
     await grantEngagement(a1.id);
     const cm = await env.ctx("manager");

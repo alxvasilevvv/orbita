@@ -45,7 +45,7 @@ export function imageSize(buf: Buffer, mime: string): { width: number; height: n
 
 export interface MalwareScanner { name: string; scan(buf: Buffer): Promise<{ clean: boolean; detail: string }> }
 
-/** Минимальная проверка: тестовая сигнатура EICAR. Для production — ClamAV. */
+/** Минимальная проверка: тестовая сигнатура EICAR. Для production: ClamAV. */
 export class SignatureScanner implements MalwareScanner {
   name = "signature";
   async scan(buf: Buffer) {

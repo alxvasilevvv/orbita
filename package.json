@@ -9,7 +9,11 @@
     "migrate": "tsx src/db/migrate-cli.ts",
     "seed": "tsx src/db/seed-cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "i18n:check": "tsx scripts/i18n-check.ts",
+    "loadtest": "tsx scripts/loadtest.ts",
+    "test:pg": "TEST_PG_ADMIN_URL=${TEST_PG_ADMIN_URL:-postgres://postgres@localhost:5432/postgres} vitest run",
+    "e2e": "mkdir -p e2e/shots && node e2e/flow.mjs && node e2e/smoke.mjs"
   },
   "author": "",
   "license": "ISC",
@@ -29,6 +33,7 @@
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "esbuild": "^0.28.2",
+    "playwright": "^1.63.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"

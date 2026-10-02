@@ -40,7 +40,7 @@ const PlanInput = z.object({
 
 /**
  * Алгоритм календаря: события → направления → разнообразие форматов → запас на согласование →
- * стартовые окна → проверка конфликтов. Время — согласованная гипотеза, а не «лучшее время».
+ * стартовые окна → проверка конфликтов. Время: согласованная гипотеза, а не «лучшее время».
  */
 export async function planMonth(ctx: Ctx, accountId: string, input: unknown, now = new Date()) {
   const a = await accountScope(ctx.db, ctx, accountId);
@@ -110,7 +110,7 @@ export async function planMonth(ctx: Ctx, accountId: string, input: unknown, now
     slots.push({ local: c.local, utc: c.utc, title: `Идея: ${pillar}`, pillar, format: list[(k - 1) % list.length], campaign: null, reason: "окно публикации из стратегии" });
   });
   slots.sort((p, q) => +p.utc - +q.utc);
-  notes.push("Время публикации — стартовая гипотеза, согласованная с клиентом. Статистически лучшее время на малой выборке не определяется");
+  notes.push("Время публикации: стартовая гипотеза, согласованная с клиентом. Статистически лучшее время на малой выборке не определяется");
 
   let created = 0;
   if (!d.dry_run) {

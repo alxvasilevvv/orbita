@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import type { Db } from "../db/db";
 import type { SecretStore } from "./publishing";
 
-/** AES-256-GCM. Ключ берётся из SECRETS_KEY (в production — из KMS). Значения не попадают в логи. */
+/** AES-256-GCM. Ключ берётся из SECRETS_KEY (в production: из KMS). Значения не попадают в логи. */
 export class DbSecretStore implements SecretStore {
   private key: Buffer;
   constructor(private db: Db, rawKey = process.env.SECRETS_KEY) {

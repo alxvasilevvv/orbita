@@ -9,7 +9,7 @@ export type ContentState = (typeof CONTENT_STATES)[number];
 export interface TransitionRule {
   from: ContentState[];
   to: ContentState;
-  /** Операция, которую должен иметь инициатор. "system" — только фоновый исполнитель. */
+  /** Операция, которую должен иметь инициатор. "system": только фоновый исполнитель. */
   requires: Operation | "system";
   /** Обязательные данные. */
   needs?: ("version" | "schedule" | "comment" | "approval" | "external_evidence")[];
@@ -29,12 +29,12 @@ export const TRANSITIONS: TransitionRule[] = [
   { from: ["approved"], to: "scheduled", requires: "schedule", needs: ["schedule"], event: "content.scheduled", notify: ["account_manager"], undo: "unschedule → approved" },
   { from: ["scheduled"], to: "approved", requires: "schedule", event: "content.unscheduled", notify: [], undo: "запланировать снова" },
   { from: ["scheduled", "approved"], to: "publishing", requires: "system", event: "content.publishing", notify: [], undo: "нельзя: исход определяется внешней системой" },
-  { from: ["publishing"], to: "published", requires: "system", needs: ["external_evidence"], event: "content.published", notify: ["account_manager", "client_approvers"], undo: "удаление — отдельная операция" },
+  { from: ["publishing"], to: "published", requires: "system", needs: ["external_evidence"], event: "content.published", notify: ["account_manager", "client_approvers"], undo: "удаление: отдельная операция" },
   { from: ["publishing"], to: "failed", requires: "system", event: "content.failed", notify: ["account_manager"], undo: "повторная постановка после разбора" },
   { from: ["publishing"], to: "publication_unknown", requires: "system", event: "content.publication_unknown", notify: ["account_manager", "ops_director"], undo: "разрешение неопределённости" },
-  { from: ["publication_unknown"], to: "published", requires: "publish", needs: ["external_evidence"], event: "content.unknown_resolved_published", notify: [], undo: "—" },
-  { from: ["publication_unknown", "failed"], to: "approved", requires: "publish", needs: ["comment"], event: "content.unknown_resolved_not_published", notify: [], undo: "—" },
-  { from: ["approved", "scheduled"], to: "publishing", requires: "publish", event: "content.assisted_started", notify: [], undo: "—" },
+  { from: ["publication_unknown"], to: "published", requires: "publish", needs: ["external_evidence"], event: "content.unknown_resolved_published", notify: [], undo: "нет" },
+  { from: ["publication_unknown", "failed"], to: "approved", requires: "publish", needs: ["comment"], event: "content.unknown_resolved_not_published", notify: [], undo: "нет" },
+  { from: ["approved", "scheduled"], to: "publishing", requires: "publish", event: "content.assisted_started", notify: [], undo: "нет" },
   { from: ["idea", "brief", "draft", "editorial_review", "client_review", "changes_requested", "approved", "scheduled", "failed"], to: "cancelled", requires: "edit_content", needs: ["comment"], event: "content.cancelled", notify: ["account_manager"], undo: "восстановить в draft" },
   { from: ["published", "cancelled"], to: "archived", requires: "edit_content", event: "content.archived", notify: [], undo: "разархивировать" },
 ];

@@ -8,7 +8,7 @@ import { mediaIssues } from "./media";
 import type { Storage } from "./storage";
 
 export interface SecretStore { get(ref: string): Promise<string | null> }
-/** Dev-хранилище. В продакшне — AWS Secrets Manager / Vault через тот же интерфейс. */
+/** Dev-хранилище. В продакшне: AWS Secrets Manager / Vault через тот же интерфейс. */
 export class MemorySecretStore implements SecretStore {
   constructor(private m = new Map<string, string>()) {}
   set(ref: string, v: string) { this.m.set(ref, v); }

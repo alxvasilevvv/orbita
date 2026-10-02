@@ -43,7 +43,7 @@ export interface AppDeps {
   ai?: AiProvider;
 }
 
-/** Простой лимитер запросов на пользователя/IP: защита от случайных циклов в клиентах. Основная защита — WAF. */
+/** Простой лимитер запросов на пользователя/IP: защита от случайных циклов в клиентах. Основная защита: WAF. */
 function rateLimiter(limitPerMin: number) {
   const hits = new Map<string, { n: number; reset: number }>();
   return (key: string) => {

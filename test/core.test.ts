@@ -61,13 +61,13 @@ describe("метрики (критерии 8, 9)", () => {
 });
 
 describe("возможности (критерии 2, 3)", () => {
-  it("без одобренных продуктов публикация — assisted, причина объяснена", () => {
+  it("без одобренных продуктов публикация: assisted, причина объяснена", () => {
     const caps = resolveCapabilities({ kind: "executive", connectionStatus: "active", grantedScopes: ["w_member_social"] }, { approvedProducts: [], apiVersion: "202608" });
     const p = caps.find((c) => c.operation === "publish_post_member")!;
     expect(p.mode).toBe("assisted");
     expect(p.unavailable_reason).toMatch(/не добавлен/);
   });
-  it("с продуктом и scope — api", () => {
+  it("с продуктом и scope: api", () => {
     const caps = resolveCapabilities({ kind: "executive", connectionStatus: "active", grantedScopes: ["openid", "profile", "w_member_social"] }, { approvedProducts: ["Share on LinkedIn"], apiVersion: "202608" });
     expect(caps.find((c) => c.operation === "publish_post_member")!.mode).toBe("api");
   });

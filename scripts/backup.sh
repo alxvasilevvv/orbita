@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Логическая копия PostgreSQL в формате custom. Основная защита в production — PITR управляемой базы;
+# Логическая копия PostgreSQL в формате custom. Основная защита в production: PITR управляемой базы;
 # этот скрипт нужен для переносимых копий и учений. Использование: DATABASE_URL=... scripts/backup.sh /backups
 set -euo pipefail
 DIR="${1:-./backups}"

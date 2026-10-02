@@ -38,7 +38,7 @@ function planProgress(r: any): string {
 export function attentionReasons(r: any): string[] {
   const out: string[] = [];
   if (r.publish_problems) out.push(`Ошибки или неопределённость публикации: ${r.publish_problems}`);
-  if (["expired", "revoked", "error"].includes(r.connection_status)) out.push(`Подключение LinkedIn: ${r.connection_status}, нужен переподключение`);
+  if (["expired", "revoked", "error"].includes(r.connection_status)) out.push(`Подключение LinkedIn: ${r.connection_status}, нужно переподключение`);
   if (r.connection_status === "expiring") out.push("Подключение скоро истечёт");
   if (r.pending_approvals) out.push(`${r.pending_approvals} материал(а) ожидают согласования`);
   if (r.overdue_tasks) out.push(`Просроченных задач: ${r.overdue_tasks}`);

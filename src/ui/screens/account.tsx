@@ -1,28 +1,34 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, ApiError, useApi, useAction, useToast, Loadable, go, fmt, State, STATE_RU, EV_RU, MODE_RU, KIND_RU, type LoadState } from "../lib";
+import { tx } from "../i18n";
 import { TaskList } from "./core";
+import { t } from "../lib";
+import { Onboarding, Insights, AccCalendar, AccEngagement, AccOpportunities, MediaLibrary, ClientLifecycle, ReportActions } from "./account-extra";
 
 /* ---------- рабочее пространство аккаунта ---------- */
-export const TABS = ["Обзор", "Стратегия", "База знаний", "Контент", "Задачи", "Аналитика", "Отчёты", "История действий", "Настройки и доступы"];
+export const TABS = ["Обзор", "Стратегия", "База знаний", "Контент", "Календарь", "Взаимодействия", "Задачи", "Результаты и возможности", "Аналитика", "Отчёты", "История действий", "Настройки и доступы"];
 export function AccountPage({ id }: { id: string }) {
   const s = useApi<any>(`/api/accounts/${id}`);
   const [tab, setTab] = useState(TABS[0]);
   return (
     <Loadable s={s}>{(d) => (
       <>
-        <a href="#/accounts" className="small">Все аккаунты</a>
+        <a href="#/accounts" className="small">{t("Все аккаунты")}</a>
         <h1>{d.account.display_name}</h1>
-        <p className="lede">{d.account.client_name}, {KIND_RU[d.account.kind]}. Часовой пояс {d.account.timezone}, язык {d.account.primary_language}{d.account.confidential_job_search ? ". Конфиденциальный поиск работы" : ""}.</p>
-        <div className="tabs" role="tablist">{TABS.map((t) => <button key={t} role="tab" aria-selected={t === tab} onClick={() => setTab(t)}>{t}</button>)}</div>
-        {tab === "Обзор" && <AccOverview d={d} />}
-        {tab === "Стратегия" && <AccStrategy d={d} reload={s.reload} />}
+        <p className="lede">{d.account.client_name}, {t(KIND_RU[d.account.kind])}. {t("Часовой пояс")} {d.account.timezone}, {t("язык")} {d.account.primary_language}{d.account.confidential_job_search ? `. ${t("Конфиденциальный поиск работы")}` : ""}.</p>
+        <div className="tabs" role="tablist">{TABS.map((tb) => <button key={tb} role="tab" aria-selected={tb === tab} onClick={() => setTab(tb)}>{t(tb)}</button>)}</div>
+        {tab === "Обзор" && <><AccOverview d={d} /><Onboarding d={d} reload={s.reload} /></>}
+        {tab === "Стратегия" && <><AccStrategy d={d} reload={s.reload} /><Insights d={d} /></>}
         {tab === "База знаний" && <AccKnowledge d={d} reload={s.reload} />}
-        {tab === "Контент" && <AccContent d={d} reload={s.reload} />}
+        {tab === "Контент" && <div className="grid cols-2-1"><AccContent d={d} reload={s.reload} /><MediaLibrary accountId={d.account.id} /></div>}
+        {tab === "Календарь" && <AccCalendar d={d} reload={s.reload} />}
+        {tab === "Взаимодействия" && <AccEngagement d={d} />}
         {tab === "Задачи" && <TaskList rows={d.tasks} reload={s.reload} />}
+        {tab === "Результаты и возможности" && <AccOpportunities d={d} />}
         {tab === "Аналитика" && <AccAnalytics d={d} reload={s.reload} />}
-        {tab === "Отчёты" && <AccReports d={d} reload={s.reload} />}
+        {tab === "Отчёты" && <><AccReports d={d} reload={s.reload} /><ReportActions d={d} reload={s.reload} /></>}
         {tab === "История действий" && <AccHistory d={d} />}
-        {tab === "Настройки и доступы" && <AccSettings d={d} reload={s.reload} />}
+        {tab === "Настройки и доступы" && <><AccSettings d={d} reload={s.reload} /><ClientLifecycle d={d} /></>}
       </>
     )}</Loadable>
   );
@@ -36,13 +42,13 @@ export function AccOverview({ d }: { d: any }) {
   return (
     <div className="grid cols-2">
       <div className="panel">
-        <h3>Стратегия</h3>
-        {st ? <dl className="kv"><dt>Цель</dt><dd>{st.playbook.goal}</dd><dt>Аудитория</dt><dd>{st.playbook.audience}</dd><dt>Частота</dt><dd>{st.playbook.posts_per_week} в неделю (гипотеза)</dd><dt>Основной KPI</dt><dd>{st.playbook.primary_kpi}</dd><dt>Версия</dt><dd>v{st.version}</dd></dl> : <p className="muted">Стратегия не утверждена. Публикации можно готовить, но план и отчёты будут без цели.</p>}
+        <h3>{t("Стратегия")}</h3>
+        {st ? <dl className="kv"><dt>{t("Цель")}</dt><dd>{st.playbook.goal}</dd><dt>{t("Аудитория")}</dt><dd>{st.playbook.audience}</dd><dt>{t("Частота")}</dt><dd>{st.playbook.posts_per_week} {t("в неделю (гипотеза)")}</dd><dt>{t("Основной KPI")}</dt><dd>{st.playbook.primary_kpi}</dd><dt>{t("Версия")}</dt><dd>v{st.version}</dd></dl> : <p className="muted">{t("Стратегия не утверждена. Публикации можно готовить, но план и отчёты будут без цели.")}</p>}
       </div>
       <div className="panel">
-        <h3>Публикация</h3>
-        {pub && <p><span className={`mode ${pub.mode}`}>{MODE_RU[pub.mode]}</span> {pub.mode !== "api" && <span className="small">{pub.unavailable_reason}. {pub.alternative}.</span>}</p>}
-        <dl className="kv"><dt>Следующая</dt><dd>{next ? `${next.title}, ${fmt(next.scheduled_at, d.account.timezone)}` : "не запланирована"}</dd><dt>Ждут согласования</dt><dd className="num">{waiting}</dd><dt>Открытых задач</dt><dd className="num">{d.tasks.filter((t: any) => !["done", "cancelled"].includes(t.status)).length}</dd></dl>
+        <h3>{t("Публикация")}</h3>
+        {pub && <p><span className={`mode ${pub.mode}`}>{t(MODE_RU[pub.mode])}</span> {pub.mode !== "api" && <span className="small">{tx(pub.unavailable_reason)}. {t(pub.alternative)}.</span>}</p>}
+        <dl className="kv"><dt>{t("Следующая")}</dt><dd>{next ? `${next.title}, ${fmt(next.scheduled_at, d.account.timezone)}` : t("не запланирована")}</dd><dt>{t("Ждут согласования")}</dt><dd className="num">{waiting}</dd><dt>{t("Открытых задач")}</dt><dd className="num">{d.tasks.filter((t: any) => !["done", "cancelled"].includes(t.status)).length}</dd></dl>
       </div>
     </div>
   );
@@ -57,29 +63,29 @@ export function AccStrategy({ d, reload }: { d: any; reload: () => void }) {
   return (
     <div className="grid cols-2">
       <div className="list">
-        {d.strategies.length === 0 && <div className="empty">Стратегии ещё нет. Создайте первую версию по шаблону справа.</div>}
+        {d.strategies.length === 0 && <div className="empty">{t("Стратегии ещё нет. Создайте первую версию по шаблону справа.")}</div>}
         {d.strategies.map((s: any) => (
           <div key={s.id} className="item">
-            <div className="spread"><h3>Версия {s.version}, шаблон «{s.template}»</h3><span className="state">{s.status === "approved" ? "утверждена" : s.status === "draft" ? "черновик" : "заменена"}</span></div>
-            <dl className="kv small"><dt>Цель</dt><dd>{s.playbook.goal}</dd><dt>Направления</dt><dd>{s.playbook.pillars.join(", ")}</dd><dt>Частота</dt><dd>{s.playbook.posts_per_week} в неделю, стартовая гипотеза</dd><dt>Запрещённые темы</dt><dd>{s.restrictions.forbidden_topics?.join(", ") || "нет"}</dd><dt>Самосогласование</dt><dd>{s.restrictions.allow_self_approval ? "разрешено политикой" : "запрещено"}</dd>{s.change_reason && <><dt>Причина изменения</dt><dd>{s.change_reason}</dd></>}</dl>
-            {s.status === "draft" && can("approve_strategy") && <button className="btn primary" disabled={busy} style={{ marginTop: 8 }} onClick={() => run(() => api(`/api/accounts/${d.account.id}/strategies/${s.id}/approve`, { body: {} }), "Стратегия утверждена", reload)}>Утвердить стратегию</button>}
+            <div className="spread"><h3>{t("Версия")} {s.version}{t(", шаблон «")}{s.template}»</h3><span className="state">{s.status === "approved" ? t("утверждена") : s.status === "draft" ? t("черновик") : t("заменена")}</span></div>
+            <dl className="kv small"><dt>{t("Цель")}</dt><dd>{s.playbook.goal}</dd><dt>{t("Направления")}</dt><dd>{s.playbook.pillars.join(", ")}</dd><dt>{t("Частота")}</dt><dd>{s.playbook.posts_per_week} {t("в неделю, стартовая гипотеза")}</dd><dt>{t("Запрещённые темы")}</dt><dd>{s.restrictions.forbidden_topics?.join(", ") || "нет"}</dd><dt>{t("Самосогласование")}</dt><dd>{s.restrictions.allow_self_approval ? t("разрешено политикой") : t("запрещено")}</dd>{s.change_reason && <><dt>{t("Причина изменения")}</dt><dd>{s.change_reason}</dd></>}</dl>
+            {s.status === "draft" && can("approve_strategy") && <button className="btn primary" disabled={busy} style={{ marginTop: 8 }} onClick={() => run(() => api(`/api/accounts/${d.account.id}/strategies/${s.id}/approve`, { body: {} }), "Стратегия утверждена", reload)}>{t("Утвердить стратегию")}</button>}
           </div>))}
       </div>
       {can("edit_strategy") ? (
         <div className="panel">
-          <h3>Новая версия стратегии</h3>
+          <h3>{t("Новая версия стратегии")}</h3>
           <div className="grid">
-            <label className="field">Шаблон<select value={f.template} onChange={(e) => setF({ ...f, template: e.target.value })}>{meta.data && Object.entries(meta.data.strategy_templates).map(([k, t]: any) => <option key={k} value={k}>{t.label}</option>)}</select></label>
-            {tpl && <p className="small muted">Цель шаблона: {tpl.goal}. Направления: {tpl.pillars.join(", ")}. Стартовая частота {tpl.posts_per_week_hypothesis} в неделю согласуется с клиентом.{tpl.guardrails ? ` ${tpl.guardrails.join(" ")}` : ""}</p>}
-            <label className="field">Основная цель<input type="text" value={f.goal} placeholder={tpl?.goal} onChange={(e) => setF({ ...f, goal: e.target.value })} /></label>
-            <label className="field">Целевая аудитория<input type="text" value={f.audience} onChange={(e) => setF({ ...f, audience: e.target.value })} /></label>
-            <label className="field">Контентные направления через запятую<input type="text" value={f.pillars} placeholder={tpl?.pillars.join(", ")} onChange={(e) => setF({ ...f, pillars: e.target.value })} /></label>
-            <label className="field">Публикаций в неделю<input type="text" inputMode="decimal" value={f.ppw} onChange={(e) => setF({ ...f, ppw: e.target.value })} /></label>
-            <label className="field">Запрещённые темы через запятую<input type="text" value={f.forbidden} onChange={(e) => setF({ ...f, forbidden: e.target.value })} /></label>
-            <label className="field">Причина изменения<input type="text" value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} /></label>
-            <button className="btn primary" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/strategies`, { body: { template: f.template, change_reason: f.reason || undefined, playbook: { goal: f.goal || tpl.goal, audience: f.audience || "не указана", pillars: (f.pillars || tpl.pillars.join(",")).split(",").map((x: string) => x.trim()).filter(Boolean), posts_per_week: Number(f.ppw) || tpl.posts_per_week_hypothesis, primary_kpi: tpl.primary_kpi, secondary_kpis: tpl.secondary_kpis }, restrictions: { forbidden_topics: f.forbidden.split(",").map((x) => x.trim()).filter(Boolean) } } }), "Версия стратегии создана", reload)}>Создать версию</button>
+            <label className="field">{t("Шаблон")}<select value={f.template} onChange={(e) => setF({ ...f, template: e.target.value })}>{meta.data && Object.entries(meta.data.strategy_templates).map(([k, t]: any) => <option key={k} value={k}>{t.label}</option>)}</select></label>
+            {tpl && <p className="small muted">{t("Цель шаблона:")} {tpl.goal}{t(". Направления:")} {tpl.pillars.join(", ")}{t(". Стартовая частота")} {tpl.posts_per_week_hypothesis} {t("в неделю согласуется с клиентом.")}{tpl.guardrails ? ` ${tpl.guardrails.join(" ")}` : ""}</p>}
+            <label className="field">{t("Основная цель")}<input type="text" value={f.goal} placeholder={tpl?.goal} onChange={(e) => setF({ ...f, goal: e.target.value })} /></label>
+            <label className="field">{t("Целевая аудитория")}<input type="text" value={f.audience} onChange={(e) => setF({ ...f, audience: e.target.value })} /></label>
+            <label className="field">{t("Контентные направления через запятую")}<input type="text" value={f.pillars} placeholder={tpl?.pillars.join(", ")} onChange={(e) => setF({ ...f, pillars: e.target.value })} /></label>
+            <label className="field">{t("Публикаций в неделю")}<input type="text" inputMode="decimal" value={f.ppw} onChange={(e) => setF({ ...f, ppw: e.target.value })} /></label>
+            <label className="field">{t("Запрещённые темы через запятую")}<input type="text" value={f.forbidden} onChange={(e) => setF({ ...f, forbidden: e.target.value })} /></label>
+            <label className="field">{t("Причина изменения")}<input type="text" value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} /></label>
+            <button className="btn primary" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/strategies`, { body: { template: f.template, change_reason: f.reason || undefined, playbook: { goal: f.goal || tpl.goal, audience: f.audience || "не указана", pillars: (f.pillars || tpl.pillars.join(",")).split(",").map((x: string) => x.trim()).filter(Boolean), posts_per_week: Number(f.ppw) || tpl.posts_per_week_hypothesis, primary_kpi: tpl.primary_kpi, secondary_kpis: tpl.secondary_kpis }, restrictions: { forbidden_topics: f.forbidden.split(",").map((x) => x.trim()).filter(Boolean) } } }), "Версия стратегии создана", reload)}>{t("Создать версию")}</button>
           </div>
-        </div>) : <div className="notice info">Редактировать стратегию могут стратег и аккаунт-менеджер.</div>}
+        </div>) : <div className="notice info">{t("Редактировать стратегию могут стратег и аккаунт-менеджер.")}</div>}
     </div>
   );
 }
@@ -90,20 +96,20 @@ export function AccKnowledge({ d, reload }: { d: any; reload: () => void }) {
   return (
     <div className="grid cols-2">
       <div>
-        <h3>Подтверждённые факты</h3>
-        <p className="muted small">AI и авторы используют только эти факты. Каждый имеет подтверждающего и дату актуальности.</p>
-        {d.claims.length === 0 ? <div className="empty">Подтверждённых фактов нет. Без них AI-черновик будет заблокирован вопросом клиенту.</div> :
-          <div className="list">{d.claims.map((c: any) => <div key={c.id} className="item"><div>{c.statement}</div><div className="muted small">Подтвердил {c.confirmed_by}, актуально на {c.valid_as_of?.slice?.(0, 10) ?? String(c.valid_as_of)}</div></div>)}</div>}
-        <h3 style={{ marginTop: 18 }}>Источники</h3>
-        <ul>{d.knowledge.map((k: any) => <li key={k.id}>{k.title} <span className="muted small">({k.kind}, {k.usage_rights === "internal_only" ? "без AI" : "доступно AI"})</span></li>)}</ul>
+        <h3>{t("Подтверждённые факты")}</h3>
+        <p className="muted small">{t("AI и авторы используют только эти факты. Каждый имеет подтверждающего и дату актуальности.")}</p>
+        {d.claims.length === 0 ? <div className="empty">{t("Подтверждённых фактов нет. Без них AI-черновик будет заблокирован вопросом клиенту.")}</div> :
+          <div className="list">{d.claims.map((c: any) => <div key={c.id} className="item"><div>{c.statement}</div><div className="muted small">{t("Подтвердил")} {c.confirmed_by}{t(", актуально на")} {c.valid_as_of?.slice?.(0, 10) ?? String(c.valid_as_of)}</div></div>)}</div>}
+        <h3 style={{ marginTop: 18 }}>{t("Источники")}</h3>
+        <ul>{d.knowledge.map((k: any) => <li key={k.id}>{k.title} <span className="muted small">({k.kind}, {k.usage_rights === "internal_only" ? t("без AI") : t("доступно AI")})</span></li>)}</ul>
       </div>
       {d.permissions.includes("edit_strategy") && <div className="panel grid">
-        <h3>Добавить источник и факт</h3>
-        <label className="field">Название<input type="text" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></label>
-        <label className="field">Содержание<textarea value={f.body} onChange={(e) => setF({ ...f, body: e.target.value })} /></label>
-        <label className="field">Подтверждённый факт (необязательно)<input type="text" value={f.claim} onChange={(e) => setF({ ...f, claim: e.target.value })} /></label>
-        <label className="field">Кто подтвердил<input type="text" value={f.by} onChange={(e) => setF({ ...f, by: e.target.value })} /></label>
-        <button className="btn primary" disabled={busy || !f.title || !f.body || (!!f.claim && !f.by)} onClick={() => run(() => api(`/api/accounts/${d.account.id}/knowledge`, { body: { title: f.title, body: f.body, claims: f.claim ? [{ statement: f.claim, confirmed_by: f.by, valid_as_of: new Date().toISOString().slice(0, 10) }] : [] } }), "Источник добавлен", () => { setF({ title: "", body: "", claim: "", by: "" }); reload(); })}>Добавить источник</button>
+        <h3>{t("Добавить источник и факт")}</h3>
+        <label className="field">{t("Название")}<input type="text" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></label>
+        <label className="field">{t("Содержание")}<textarea value={f.body} onChange={(e) => setF({ ...f, body: e.target.value })} /></label>
+        <label className="field">{t("Подтверждённый факт (необязательно)")}<input type="text" value={f.claim} onChange={(e) => setF({ ...f, claim: e.target.value })} /></label>
+        <label className="field">{t("Кто подтвердил")}<input type="text" value={f.by} onChange={(e) => setF({ ...f, by: e.target.value })} /></label>
+        <button className="btn primary" disabled={busy || !f.title || !f.body || (!!f.claim && !f.by)} onClick={() => run(() => api(`/api/accounts/${d.account.id}/knowledge`, { body: { title: f.title, body: f.body, claims: f.claim ? [{ statement: f.claim, confirmed_by: f.by, valid_as_of: new Date().toISOString().slice(0, 10) }] : [] } }), "Источник добавлен", () => { setF({ title: "", body: "", claim: "", by: "" }); reload(); })}>{t("Добавить источник")}</button>
       </div>}
     </div>
   );
@@ -115,17 +121,17 @@ export function AccContent({ d, reload }: { d: any; reload: () => void }) {
   return (
     <>
       {d.permissions.includes("create_content") && <div className="row" style={{ marginBottom: 14 }}>
-        <input type="text" placeholder="Тема нового материала" value={title} onChange={(e) => setTitle(e.target.value)} style={{ minWidth: 320 }} />
-        <button className="btn primary" disabled={!title || busy} onClick={() => run(async () => { const it = await api(`/api/accounts/${d.account.id}/content`, { body: { title } }); go(`/content/${it.id}`); }, "Материал создан")}>Создать материал</button>
+        <input type="text" placeholder={t("Тема нового материала")} value={title} onChange={(e) => setTitle(e.target.value)} style={{ minWidth: 320 }} />
+        <button className="btn primary" disabled={!title || busy} onClick={() => run(async () => { const it = await api(`/api/accounts/${d.account.id}/content`, { body: { title } }); go(`/content/${it.id}`); }, "Материал создан")}>{t("Создать материал")}</button>
       </div>}
-      {d.content.length === 0 ? <div className="empty">Материалов пока нет. Начните с темы из контентных направлений стратегии.</div> : (
-        <table><thead><tr><th>Материал</th><th>Состояние</th><th>Время публикации</th><th>Подтверждение</th></tr></thead><tbody>
+      {d.content.length === 0 ? <div className="empty">{t("Материалов пока нет. Начните с темы из контентных направлений стратегии.")}</div> : (
+        <table><thead><tr><th>{t("Материал")}</th><th>{t("Состояние")}</th><th>{t("Время публикации")}</th><th>{t("Подтверждение")}</th></tr></thead><tbody>
           {d.content.map((c: any) => (
             <tr key={c.id} className="click" tabIndex={0} onClick={() => go(`/content/${c.id}`)} onKeyDown={(e) => e.key === "Enter" && go(`/content/${c.id}`)}>
               <td><div className={`ev ${c.evidence_type ?? (c.state === "publication_unknown" ? "unknown" : c.state === "failed" ? "failed" : "")}`}><b>{c.title}</b><div className="muted small">v{c.version ?? 0}{c.pillar ? `, ${c.pillar}` : ""}</div></div></td>
               <td><State s={c.state} /></td>
               <td className="num">{fmt(c.scheduled_at, c.scheduled_tz ?? d.account.timezone)}</td>
-              <td>{c.evidence_type ? <span className={`evlabel ${c.evidence_type}`}>{EV_RU[c.evidence_type]}</span> : <span className="muted">—</span>}</td>
+              <td>{c.evidence_type ? <span className={`evlabel ${c.evidence_type}`}>{t(EV_RU[c.evidence_type])}</span> : <span className="muted">–</span>}</td>
             </tr>))}
         </tbody></table>)}
     </>
@@ -139,21 +145,21 @@ export function AccAnalytics({ d, reload }: { d: any; reload: () => void }) {
   const [f, setF] = useState({ key: "followers", value: "", source: "" });
   return (
     <>
-      {pa && pa.mode !== "api" && <div className="notice" style={{ marginBottom: 14 }}>Аналитика LinkedIn не подключена: {pa.unavailable_reason}. Вносите показатели вручную с указанием источника. Пустое значение означает «нет данных», а не ноль.</div>}
-      <h3>Показатели публикаций</h3>
-      <Loadable s={pm}>{(rows) => rows.length === 0 ? <div className="empty">Показателей публикаций нет. Внесите выгрузку или подключите разрешённый источник.</div> : (
-        <table><thead><tr><th>Материал</th><th>Показы</th><th>Реакции</th><th>Комментарии</th><th>Репосты</th><th>Interaction rate*</th><th>Источник</th></tr></thead><tbody>
-          {rows.map((r) => <tr key={r.content_item_id}><td>{d.content.find((c: any) => c.id === r.content_item_id)?.title ?? r.content_item_id}</td>{["impressions", "reactions", "comments", "reposts"].map((k) => <td key={k} className="num">{r[k] ?? <span className="muted">нет данных</span>}</td>)}<td className="num">{r.interaction_rate.status === "ok" ? `${r.interaction_rate.value.toFixed(2)}%` : <span className="muted small">не рассчитывается</span>}</td><td className="small">{r.sources.join(", ")}</td></tr>)}
+      {pa && pa.mode !== "api" && <div className="notice" style={{ marginBottom: 14 }}>{t("Аналитика LinkedIn не подключена:")} {tx(pa.unavailable_reason)}{t(". Вносите показатели вручную с указанием источника. Пустое значение означает «нет данных», а не ноль.")}</div>}
+      <h3>{t("Показатели публикаций")}</h3>
+      <Loadable s={pm}>{(rows) => rows.length === 0 ? <div className="empty">{t("Показателей публикаций нет. Внесите выгрузку или подключите разрешённый источник.")}</div> : (
+        <table><thead><tr><th>{t("Материал")}</th><th>{t("Показы")}</th><th>{t("Реакции")}</th><th>{t("Комментарии")}</th><th>{t("Репосты")}</th><th>Interaction rate*</th><th>{t("Источник")}</th></tr></thead><tbody>
+          {rows.map((r) => <tr key={r.content_item_id}><td>{d.content.find((c: any) => c.id === r.content_item_id)?.title ?? r.content_item_id}</td>{["impressions", "reactions", "comments", "reposts"].map((k) => <td key={k} className="num">{r[k] ?? <span className="muted">{t("нет данных")}</span>}</td>)}<td className="num">{r.interaction_rate.status === "ok" ? `${r.interaction_rate.value.toFixed(2)}%` : <span className="muted small">{t("не рассчитывается")}</span>}</td><td className="small">{r.sources.join(", ")}</td></tr>)}
         </tbody></table>)}</Loadable>
-      <p className="muted small">* Определение платформы: (реакции + комментарии + репосты) / показы × 100%. Не является метрикой LinkedIn.</p>
-      <h3 style={{ marginTop: 18 }}>Снимки аккаунта</h3>
-      {d.metrics.filter((m: any) => !m.content_item_id).length === 0 ? <p className="muted">Снимков нет.</p> :
-        <table><thead><tr><th>Метрика</th><th>Значение</th><th>Наблюдение</th><th>Источник</th></tr></thead><tbody>{d.metrics.filter((m: any) => !m.content_item_id).map((m: any) => <tr key={m.id}><td>{m.name}</td><td className="num">{m.value ?? <span className="muted">нет данных</span>}</td><td className="num">{fmt(m.observed_at)}</td><td className="small">{m.source}: {m.source_detail}</td></tr>)}</tbody></table>}
+      <p className="muted small">* {t("Определение платформы: (реакции + комментарии + репосты) / показы × 100%. Не является метрикой LinkedIn.")}</p>
+      <h3 style={{ marginTop: 18 }}>{t("Снимки аккаунта")}</h3>
+      {d.metrics.filter((m: any) => !m.content_item_id).length === 0 ? <p className="muted">{t("Снимков нет.")}</p> :
+        <table><thead><tr><th>{t("Метрика")}</th><th>{t("Значение")}</th><th>{t("Наблюдение")}</th><th>{t("Источник")}</th></tr></thead><tbody>{d.metrics.filter((m: any) => !m.content_item_id).map((m: any) => <tr key={m.id}><td>{m.name}</td><td className="num">{m.value ?? <span className="muted">{t("нет данных")}</span>}</td><td className="num">{fmt(m.observed_at)}</td><td className="small">{m.source}: {m.source_detail}</td></tr>)}</tbody></table>}
       {d.permissions.includes("enter_metrics") && <div className="panel row" style={{ marginTop: 14 }}>
-        <select value={f.key} onChange={(e) => setF({ ...f, key: e.target.value })} aria-label="Метрика"><option value="followers">Подписчики</option><option value="profile_views">Просмотры профиля</option><option value="qualified_inquiries">Квалифицированные обращения</option></select>
-        <input type="text" inputMode="numeric" placeholder="Значение, пусто = нет данных" value={f.value} onChange={(e) => setF({ ...f, value: e.target.value })} />
-        <input type="text" placeholder="Источник, например «скриншот аналитики 30.09»" value={f.source} onChange={(e) => setF({ ...f, source: e.target.value })} style={{ minWidth: 280 }} />
-        <button className="btn primary" disabled={busy || !f.source} onClick={() => run(() => api(`/api/accounts/${d.account.id}/metrics`, { body: { source: "manual_entry", source_detail: f.source, rows: [{ metric_key: f.key, value: f.value === "" ? null : Number(f.value), observed_at: new Date().toISOString() }] } }), "Показатель сохранён", () => { reload(); pm.reload(); })}>Сохранить показатель</button>
+        <select value={f.key} onChange={(e) => setF({ ...f, key: e.target.value })} aria-label={t("Метрика")}><option value="followers">{t("Подписчики")}</option><option value="profile_views">{t("Просмотры профиля")}</option><option value="qualified_inquiries">{t("Квалифицированные обращения")}</option></select>
+        <input type="text" inputMode="numeric" placeholder={t("Значение, пусто = нет данных")} value={f.value} onChange={(e) => setF({ ...f, value: e.target.value })} />
+        <input type="text" placeholder={t("Источник, например «скриншот аналитики 30.09»")} value={f.source} onChange={(e) => setF({ ...f, source: e.target.value })} style={{ minWidth: 280 }} />
+        <button className="btn primary" disabled={busy || !f.source} onClick={() => run(() => api(`/api/accounts/${d.account.id}/metrics`, { body: { source: "manual_entry", source_detail: f.source, rows: [{ metric_key: f.key, value: f.value === "" ? null : Number(f.value), observed_at: new Date().toISOString() }] } }), "Показатель сохранён", () => { reload(); pm.reload(); })}>{t("Сохранить показатель")}</button>
       </div>}
     </>
   );
@@ -165,8 +171,8 @@ export function AccReports({ d, reload }: { d: any; reload: () => void }) {
   const weekAgo = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
   return (
     <>
-      {d.permissions.includes("export") && <button className="btn primary" disabled={busy} onClick={() => run(async () => { const r = await api(`/api/accounts/${d.account.id}/reports/weekly`, { body: { period_start: weekAgo, period_end: today } }); go(`/reports/${r.id}`); }, "Отчёт сформирован", reload)}>Сформировать отчёт за неделю</button>}
-      <div className="list" style={{ marginTop: 14 }}>{d.reports.length === 0 ? <div className="empty">Отчётов ещё нет.</div> : d.reports.map((r: any) => <a key={r.id} className="item" href={`#/reports/${r.id}`}>Еженедельный отчёт {String(r.period_start).slice(0, 10)} – {String(r.period_end).slice(0, 10)}</a>)}</div>
+      {d.permissions.includes("export") && <button className="btn primary" disabled={busy} onClick={() => run(async () => { const r = await api(`/api/accounts/${d.account.id}/reports/weekly`, { body: { period_start: weekAgo, period_end: today } }); go(`/reports/${r.id}`); }, "Отчёт сформирован", reload)}>{t("Сформировать отчёт за неделю")}</button>}
+      <div className="list" style={{ marginTop: 14 }}>{d.reports.length === 0 ? <div className="empty">{t("Отчётов ещё нет.")}</div> : d.reports.map((r: any) => <a key={r.id} className="item" href={`#/reports/${r.id}`}>{t("Еженедельный отчёт")} {String(r.period_start).slice(0, 10)} – {String(r.period_end).slice(0, 10)}</a>)}</div>
     </>
   );
 }
@@ -174,11 +180,11 @@ export function AccReports({ d, reload }: { d: any; reload: () => void }) {
 export function AccHistory({ d }: { d: any }) {
   return (
     <>
-      <div className="notice info" style={{ marginBottom: 14 }}>Это журнал действий, прошедших через платформу или отмеченных вручную. Он не является полной историей активности аккаунта в LinkedIn: внешние действия, сделанные мимо платформы, здесь не видны.</div>
-      {d.actions.length === 0 ? <div className="empty">Действий пока нет.</div> : <div className="list">{d.actions.map((a: any) => (
+      <div className="notice info" style={{ marginBottom: 14 }}>{t("Это журнал действий, прошедших через платформу или отмеченных вручную. Он не является полной историей активности аккаунта в LinkedIn: внешние действия, сделанные мимо платформы, здесь не видны.")}</div>
+      {d.actions.length === 0 ? <div className="empty">{t("Действий пока нет.")}</div> : <div className="list">{d.actions.map((a: any) => (
         <div key={a.id} className={`item ev ${a.status === "unknown" ? "unknown" : a.status === "failed" ? "failed" : a.evidence_type}`}>
-          <div className="spread"><b>{a.action_type === "publish_post" ? "Публикация поста" : a.action_type}</b><span className={`evlabel ${a.status === "unknown" ? "unknown" : a.evidence_type}`}>{a.status === "unknown" ? EV_RU.unknown : a.status === "failed" ? `Ошибка ${a.error_code ?? ""}` : EV_RU[a.evidence_type]}</span></div>
-          <div className="small muted">{a.origin === "platform_api" ? "Через API платформы" : a.origin === "manual_mark" ? `Отметил ${a.actor_name ?? "пользователь"}` : a.origin}, {fmt(a.executed_at ?? a.requested_at)}{a.external_id ? `, ${a.external_id}` : ""}</div>
+          <div className="spread"><b>{a.action_type === "publish_post" ? t("Публикация поста") : a.action_type}</b><span className={`evlabel ${a.status === "unknown" ? "unknown" : a.evidence_type}`}>{a.status === "unknown" ? EV_RU.unknown : a.status === "failed" ? `Ошибка ${a.error_code ?? ""}` : EV_RU[a.evidence_type]}</span></div>
+          <div className="small muted">{a.origin === "platform_api" ? t("Через API платформы") : a.origin === "manual_mark" ? `${t("Отметил")} ${a.actor_name ?? t("пользователь")}` : a.origin}, {fmt(a.executed_at ?? a.requested_at)}{a.external_id ? `, ${a.external_id}` : ""}</div>
         </div>))}</div>}
     </>
   );
@@ -191,26 +197,26 @@ export function AccSettings({ d, reload }: { d: any; reload: () => void }) {
   return (
     <div className="grid">
       <div className="panel">
-        <div className="spread"><h3>Подключение LinkedIn</h3><div className="row">
-          {can("manage_connection") && <button className="btn" disabled={busy} onClick={() => run(async () => { const r = await api(`/api/accounts/${d.account.id}/oauth/start`); location.href = r.authorize_url; }, "Переход в LinkedIn")}>Подключить через LinkedIn</button>}
-          <button className="btn" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/capabilities/refresh`, { body: {} }), "Возможности проверены", reload)}>Проверить возможности</button>
-          {can("manage_connection") && d.connection && d.connection.status !== "revoked" && <button className="btn danger" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/connection/revoke`, { body: {} }), "Подключение отмечено отозванным", reload)}>Отметить отзыв доступа</button>}
+        <div className="spread"><h3>{t("Подключение LinkedIn")}</h3><div className="row">
+          {can("manage_connection") && <button className="btn" disabled={busy} onClick={() => run(async () => { const r = await api(`/api/accounts/${d.account.id}/oauth/start`); location.href = r.authorize_url; }, "Переход в LinkedIn")}>{t("Подключить через LinkedIn")}</button>}
+          <button className="btn" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/capabilities/refresh`, { body: {} }), "Возможности проверены", reload)}>{t("Проверить возможности")}</button>
+          {can("manage_connection") && d.connection && d.connection.status !== "revoked" && <button className="btn danger" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/connection/revoke`, { body: {} }), "Подключение отмечено отозванным", reload)}>{t("Отметить отзыв доступа")}</button>}
         </div></div>
-        <p className="small">{d.connection ? `Статус: ${d.connection.status}. Разрешения: ${d.connection.granted_scopes.join(" ") || "нет"}.` : "Аккаунт не подключён. Платформа работает через assisted-процессы: готовит материал, человек выполняет действие и вносит результат."}</p>
-        <table><thead><tr><th>Операция</th><th>Режим</th><th>Почему</th><th>Альтернатива</th><th>Проверено</th></tr></thead><tbody>
-          {d.capabilities.map((c: any) => <tr key={c.operation}><td>{c.label}</td><td><span className={`mode ${c.mode}`}>{MODE_RU[c.mode]}</span></td><td className="small">{c.unavailable_reason ?? c.access_basis}</td><td className="small">{c.mode === "api" ? "—" : c.alternative}</td><td className="small num">{fmt(c.checked_at)}<div className="muted">{c.source}</div></td></tr>)}
+        <p className="small">{d.connection ? `${t("Статус")}: ${d.connection.status}. ${t("Разрешения")}: ${d.connection.granted_scopes.join(" ") || t("нет")}.` : t("Аккаунт не подключён. Платформа работает через assisted-процессы: готовит материал, человек выполняет действие и вносит результат.")}</p>
+        <table><thead><tr><th>{t("Операция")}</th><th>{t("Режим")}</th><th>{t("Почему")}</th><th>{t("Альтернатива")}</th><th>{t("Проверено")}</th></tr></thead><tbody>
+          {d.capabilities.map((c: any) => <tr key={c.operation}><td>{t(c.label)}</td><td><span className={`mode ${c.mode}`}>{t(MODE_RU[c.mode])}</span></td><td className="small">{tx(c.unavailable_reason ?? c.access_basis)}</td><td className="small">{c.mode === "api" ? "–" : t(c.alternative)}</td><td className="small num">{fmt(c.checked_at)}<div className="muted">{c.source}</div></td></tr>)}
         </tbody></table>
       </div>
       <div className="panel">
-        <h3>Согласия владельца</h3>
-        <p className="muted small">Договор с компанией не даёт согласия за сотрудника. Отзыв согласия на публикацию отменяет все ещё не отправленные публикации.</p>
-        <table><thead><tr><th>Вид действий</th><th>Кто дал</th><th>Основание</th><th>Статус</th><th /></tr></thead><tbody>
-          {d.consents.map((c: any) => <tr key={c.id}><td>{SCOPE_RU[c.action_scope] ?? c.action_scope}</td><td>{c.granted_by_name}</td><td className="small">{c.evidence_ref}</td><td>{c.revoked_at ? `отозвано ${fmt(c.revoked_at)}` : "действует"}</td><td>{!c.revoked_at && can("manage_consent") && <button className="btn danger" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/consents/${c.action_scope}/revoke`, { body: {} }), "Согласие отозвано", reload)}>Отозвать</button>}</td></tr>)}
+        <h3>{t("Согласия владельца")}</h3>
+        <p className="muted small">{t("Договор с компанией не даёт согласия за сотрудника. Отзыв согласия на публикацию отменяет все ещё не отправленные публикации.")}</p>
+        <table><thead><tr><th>{t("Вид действий")}</th><th>{t("Кто дал")}</th><th>{t("Основание")}</th><th>{t("Статус")}</th><th /></tr></thead><tbody>
+          {d.consents.map((c: any) => <tr key={c.id}><td>{t(SCOPE_RU[c.action_scope] ?? c.action_scope)}</td><td>{c.granted_by_name}</td><td className="small">{c.evidence_ref}</td><td>{c.revoked_at ? `отозвано ${fmt(c.revoked_at)}` : t("действует")}</td><td>{!c.revoked_at && can("manage_consent") && <button className="btn danger" disabled={busy} onClick={() => run(() => api(`/api/accounts/${d.account.id}/consents/${c.action_scope}/revoke`, { body: {} }), "Согласие отозвано", reload)}>{t("Отозвать")}</button>}</td></tr>)}
         </tbody></table>
       </div>
       {can("publish") && <div className="panel row">
-        <span>Публикация для аккаунта {d.account.publishing_paused ? "приостановлена" : "активна"}.</span>
-        <button className="btn" disabled={busy} onClick={() => run(() => api("/api/publishing/pause", { body: { scope: "account", id: d.account.id, paused: !d.account.publishing_paused } }), d.account.publishing_paused ? "Публикация возобновлена" : "Публикация приостановлена", reload)}>{d.account.publishing_paused ? "Возобновить публикацию" : "Приостановить публикацию"}</button>
+        <span>{t("Публикация для аккаунта")} {d.account.publishing_paused ? t("приостановлена") : t("активна")}.</span>
+        <button className="btn" disabled={busy} onClick={() => run(() => api("/api/publishing/pause", { body: { scope: "account", id: d.account.id, paused: !d.account.publishing_paused } }), d.account.publishing_paused ? t("Публикация возобновлена") : t("Публикация приостановлена"), reload)}>{d.account.publishing_paused ? t("Возобновить публикацию") : t("Приостановить публикацию")}</button>
       </div>}
     </div>
   );
