@@ -113,7 +113,10 @@ export async function agencyReport(ctx: Ctx, input: unknown) {
      GROUP BY u.id ORDER BY u.display_name`, [ctx.actor.agency_id, r.start.toISOString().slice(0, 10), r.end.toISOString().slice(0, 10)])).rows.map((u: any) => ({ ...u, utilization: u.capacity ? u.minutes / 60 / (u.capacity * 4.33) : null }));
   return {
     month, clients, team: load,
-    totals: { revenue: clients.reduce((s, c) => s + (c.revenue ?? 0), 0), cost: clients.reduce((s, c) => s + c.cost, 0), hours: clients.reduce((s, c) => s + c.hours, 0), margin_computable: clients.some((c) => c.minutes > 0) },
+    totals: { revenue: clients.reduce((s, c) => s + (c.revenue ?? 0), 0), cost: clients.reduce((s, c) => s + c.cost, 0), hours: clients.reduce((s, c) => s + c.hours, 0), margin_computable: clients.some((c) => c.minutes > 0),
+      // Общая маржа только по клиентам с учтённым временем: доход без себестоимости завысил бы её.
+      margin: (() => { const w = clients.filter((c) => c.minutes > 0 && c.revenue); const r = w.reduce((s, c) => s + c.revenue, 0); return r ? (r - w.reduce((s, c) => s + c.cost, 0)) / r : null; })(),
+      margin_clients: clients.filter((c) => c.minutes > 0 && c.revenue).length, clients_total: clients.length },
     formula: "Себестоимость = минуты × внутренняя ставка / 60 + AI + инфраструктура × доля аккаунтов клиента",
     notes: Number.isFinite(infra) ? [] : ["INFRA_COST_MONTH_USD не задан: накладные расходы не распределены"],
   };

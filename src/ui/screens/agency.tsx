@@ -20,7 +20,7 @@ export function AgencyReportPage() {
           <div className="vitals">
             <div className="vital"><b className="num">{money(d.totals.revenue)}</b><span>{t("доход по договорам")}</span></div>
             <div className="vital"><b className="num">{money(d.totals.cost)}</b><span>{t("себестоимость")}</span></div>
-            <div className="vital"><b className="num">{d.totals.revenue && d.totals.margin_computable ? `${num(((d.totals.revenue - d.totals.cost) / d.totals.revenue) * 100, 0)}%` : t("нет данных")}</b><span>{t("маржа")}</span></div>
+            <div className="vital"><b className="num">{d.totals.margin != null ? `${num(d.totals.margin * 100, 0)}%` : t("нет данных")}</b><span>{t("маржа")}{d.totals.margin != null && d.totals.margin_clients < d.totals.clients_total ? ` (${t("клиентов с учётом времени")}: ${d.totals.margin_clients} ${t("из")} ${d.totals.clients_total})` : ""}</span></div>
             <div className="vital"><b className="num">{num(d.totals.hours, 1)}</b><span>{t("часов")}</span></div>
           </div>
           <h2>{t("По клиентам")}</h2>

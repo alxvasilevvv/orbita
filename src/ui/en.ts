@@ -1,5 +1,8 @@
 /** Английский словарь интерфейса. Ключ: русская строка. Проверка полноты: npx tsx scripts/i18n-check.ts */
 export const EN: Record<string, string> = {
+  "из": "of",
+  "клиентов с учётом времени": "clients with logged time",
+  "Время за 30 дней не учтено: маржа не рассчитывается": "No time logged in 30 days: margin is not computed",
   "Идентичность сохранена": "Identity saved",
   "Комментарии от вашего имени": "Comments in your name",
   "Комментарий отклонён": "Comment rejected",

@@ -29,7 +29,7 @@ export function Overview() {
               <h2>{t("Часы и себестоимость за 30 дней")}</h2>
               <table><thead><tr><th>{t("Клиент")}</th><th>{t("Часы")}</th><th>{t("Труд")}</th><th>AI</th><th>{t("Доход по договору")}</th><th>{t("Маржа")}</th></tr></thead><tbody>
                 {d.finance.map((f: any) => { const cost = Number(f.labor_cost_30d) + Number(f.ai_cost_30d); const fee = f.monthly_fee == null ? null : Number(f.monthly_fee); return (
-                  <tr key={f.id}><td>{f.name}</td><td className="num">{(f.minutes_30d / 60).toFixed(1)}</td><td className="num">${Number(f.labor_cost_30d).toFixed(0)}</td><td className="num">${Number(f.ai_cost_30d).toFixed(2)}</td><td className="num">{fee == null ? t("не указан") : `$${fee.toFixed(0)}`}</td><td className="num">{fee ? `${(((fee - cost) / fee) * 100).toFixed(0)}%` : t("не рассчитывается")}</td></tr>); })}
+                  <tr key={f.id}><td>{f.name}</td><td className="num">{(f.minutes_30d / 60).toFixed(1)}</td><td className="num">${Number(f.labor_cost_30d).toFixed(0)}</td><td className="num">${Number(f.ai_cost_30d).toFixed(2)}</td><td className="num">{fee == null ? t("не указан") : `$${fee.toFixed(0)}`}</td><td className="num">{fee && f.minutes_30d > 0 ? `${(((fee - cost) / fee) * 100).toFixed(0)}%` : <span className="muted" title={t("Время за 30 дней не учтено: маржа не рассчитывается")}>{t("не рассчитывается")}</span>}</td></tr>); })}
               </tbody></table>
               <p className="muted small">{tx(d.finance_note)}</p>
             </>}
