@@ -51,7 +51,7 @@ describe("отчёты", () => {
     const r: any = await reports.agencyReport(await env.ctx("owner"), { month });
     const nw = r.clients.find((c: any) => c.name === "Northwind Robotics");
     expect(nw.labor_cost).toBeCloseTo(240 / 60 * 30 + 180 / 60 * 40, 1);
-    expect(nw.overhead).toBeCloseTo(300 * 2 / 3, 1);
+    expect(nw.overhead).toBeCloseTo(300 * 8 / 9, 1); // 8 из 9 аккаунтов агентства у Northwind (страница, CEO, 6 сотрудников)
     expect(nw.margin).toBeLessThan(1);
     delete process.env.INFRA_COST_MONTH_USD;
     await expect(reports.agencyReport(await env.ctx("manager"), { month })).rejects.toThrow(/прав/);

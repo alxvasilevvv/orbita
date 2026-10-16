@@ -32,6 +32,27 @@ export interface SocialAdapter {
   findPublication(req: { authorUrn: string; accessToken: string; idempotencyKey: string; bodyPrefix: string }): Promise<PublishResult | "not_found" | null>;
   /** Организации, которые пользователь токена администрирует (organizationAcls, роль ADMINISTRATOR, статус APPROVED). */
   listAdministeredOrganizations(req: { accessToken: string; apiVersion: string }): Promise<string[]>;
+  /** Social Actions (Community Management API, w_member_social_feed): комментарий и реакция от имени участника. */
+  createComment(req: SocialActionRequest & { text: string }): Promise<PublishResult>;
+  createReaction(req: SocialActionRequest & { reactionType: string }): Promise<PublishResult>;
+}
+export interface SocialActionRequest { actorUrn: string; targetUrn: string; accessToken: string; apiVersion: string; idempotencyKey: string }
+
+/** URN поста из ссылки LinkedIn (feed/update/urn:li:activity:…, posts/…-activity-…). null, если ссылка не распознана. */
+export function postUrnFromUrl(url: string): string | null {
+  const m = /urn:li:(activity|share|ugcPost):(\d+)/.exec(decodeURIComponent(url));
+  if (m) return `urn:li:${m[1]}:${m[2]}`;
+  const a = /-(activity|share|ugcPost)-(\d{6,})/.exec(url);
+  return a ? `urn:li:${a[1]}:${a[2]}` : null;
+}
+
+function classify(res: Response, what: string): IntegrationError | null {
+  if (res.ok) return null;
+  if (res.status === 401) return new IntegrationError("auth", "unauthorized", "Токен недействителен или отозван");
+  if (res.status === 403) return new IntegrationError("permanent", "forbidden", `Нет разрешения: ${what}`);
+  if (res.status === 429) return new IntegrationError("quota", "throttled", "LinkedIn ограничил частоту действий", Number(res.headers.get("retry-after")) || 86400);
+  if (res.status >= 500) return new IntegrationError("unknown_outcome", `http_${res.status}`, "Ошибка на стороне LinkedIn, исход не подтверждён");
+  return new IntegrationError("permanent", `http_${res.status}`, `Ошибка запроса: ${what}`);
 }
 
 /** Реальный адаптер Posts API. Вызывается только при capability mode=api. */
@@ -120,6 +141,30 @@ export class LinkedInHttpAdapter implements SocialAdapter {
     return parseOrganizationAcls(await res.json());
   }
 
+  private headers(token: string, version: string) {
+    return { Authorization: `Bearer ${token}`, "LinkedIn-Version": version, "X-Restli-Protocol-Version": "2.0.0", "Content-Type": "application/json" };
+  }
+  async createComment(req: SocialActionRequest & { text: string }): Promise<PublishResult> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/rest/socialActions/${encodeURIComponent(req.targetUrn)}/comments`, { method: "POST", headers: this.headers(req.accessToken, req.apiVersion),
+        body: JSON.stringify({ actor: req.actorUrn, object: req.targetUrn, message: { text: escapeLittleText(req.text) } }) });
+    } catch { throw new IntegrationError("unknown_outcome", "network", "Ответ LinkedIn не получен"); }
+    const err = classify(res, "комментарий"); if (err) throw err;
+    const id = res.headers.get("x-restli-id") ?? ((await res.json().catch(() => ({}))) as any).id ?? null;
+    if (!id) throw new IntegrationError("unknown_outcome", "missing_id", "LinkedIn не вернул идентификатор комментария");
+    return { externalId: String(id), url: null };
+  }
+  async createReaction(req: SocialActionRequest & { reactionType: string }): Promise<PublishResult> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/rest/reactions?actor=${encodeURIComponent(req.actorUrn)}`, { method: "POST", headers: this.headers(req.accessToken, req.apiVersion),
+        body: JSON.stringify({ root: req.targetUrn, reactionType: req.reactionType }) });
+    } catch { throw new IntegrationError("unknown_outcome", "network", "Ответ LinkedIn не получен"); }
+    const err = classify(res, "реакция"); if (err) throw err;
+    return { externalId: `${req.actorUrn}|${req.targetUrn}`, url: null };
+  }
+
   async findPublication(): Promise<null> {
     // Чтение собственных публикаций требует r_member_social (ограниченный доступ).
     // Пока доступ не подтверждён, автоматическая проверка невозможна → задача человеку.
@@ -190,6 +235,19 @@ export class DemoLinkedInAdapter implements SocialAdapter {
   }
   lastPublish: PublishRequest | null = null;
   organizations: string[] = [];
+  social: { kind: string; actor: string; target: string; text?: string }[] = [];
+  async createComment(req: SocialActionRequest & { text: string }) {
+    const f = this.failures.get(req.actorUrn);
+    if (f && f !== "lose_response") throw new IntegrationError(f, f === "quota" ? "throttled" : `demo_${f}`, `Симуляция ошибки ${f}`, f === "quota" ? 86400 : undefined);
+    this.social.push({ kind: "comment", actor: req.actorUrn, target: req.targetUrn, text: req.text });
+    return { externalId: `urn:li:comment:demo-${this.social.length}`, url: null };
+  }
+  async createReaction(req: SocialActionRequest & { reactionType: string }) {
+    const f = this.failures.get(req.actorUrn);
+    if (f && f !== "lose_response") throw new IntegrationError(f, f === "quota" ? "throttled" : `demo_${f}`, `Симуляция ошибки ${f}`, f === "quota" ? 86400 : undefined);
+    this.social.push({ kind: "reaction", actor: req.actorUrn, target: req.targetUrn });
+    return { externalId: `${req.actorUrn}|${req.targetUrn}`, url: null };
+  }
   async listAdministeredOrganizations() { return this.organizations; }
   async findPublication(req: { idempotencyKey: string }) {
     const p = this.posts.get(req.idempotencyKey);

@@ -1,11 +1,11 @@
 import { accountScope, requireOp, type Ctx } from "./context";
 import { activeStrategy } from "./accounts";
 import { requiredApprover } from "./engagement";
-import { membershipApplies } from "../core/permissions";
+import { isExternalRole, membershipApplies } from "../core/permissions";
 
 /** Есть ли у пользователя внутренняя (агентская) роль для цели. Клиенту доступен только кабинет. */
 export function hasInternalRole(ctx: Ctx, t: { clientId?: string; accountId?: string }) {
-  return ctx.actor.memberships.some((m) => m.role !== "client" && membershipApplies(m, t));
+  return ctx.actor.memberships.some((m) => !isExternalRole(m.role) && membershipApplies(m, t));
 }
 
 /** Кабинет клиента: только его ресурсы и только разрешённые ему сведения (без внутренних задач, затрат и журналов команды). */

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, useApi, useAction, Loadable, fmt, t, EV_RU, useMe } from "../lib";
+import { MyActions } from "./company";
 
 const SCOPE_RU: Record<string, string> = { publish_post: "Публикация", comment: "Комментарии", react: "Реакции", analytics_read: "Чтение аналитики", profile_edit_tasks: "Задачи по профилю", ai_processing: "Обработка AI" };
 
@@ -13,6 +14,7 @@ export function PortalPage() {
     <>
       <h1>{t("Кабинет клиента")}</h1>
       <p className="lede">{me?.display_name}. {t("Здесь вы согласуете материалы, видите план и результаты, управляете согласиями.")}</p>
+      {me?.employee && <MyActions />}
       <Loadable s={s}>{(d) => d.accounts.length === 0 ? <div className="empty">{t("У вас пока нет доступных аккаунтов.")}</div> : d.accounts.map((a: any) => (
         <section key={a.account.id} className="portal-acc">
           <h2>{a.account.display_name} <span className="muted small">{a.account.client_name}</span></h2>

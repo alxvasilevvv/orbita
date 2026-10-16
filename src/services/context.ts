@@ -1,6 +1,6 @@
 import type { Db, Queryable } from "../db/db";
 import { scopedDb, type DbScope } from "../db/scope";
-import { agencyWide, allowedOperations, can, ForbiddenError, membershipApplies, type Membership, type Operation } from "../core/permissions";
+import { agencyWide, allowedOperations, can, ForbiddenError, isExternalRole, membershipApplies, type Membership, type Operation } from "../core/permissions";
 
 export interface Actor { id: string; agency_id: string; display_name: string; memberships: Membership[]; scope: DbScope }
 export interface Ctx { db: Db; actor: Actor }
@@ -34,7 +34,7 @@ export async function loadActor(db: Queryable, userId: string): Promise<Actor | 
     clientIds: [...full],
     accountIds,
     partialClientIds,
-    internal: memberships.some((m) => m.role !== "client" && m.role !== "auditor"),
+    internal: memberships.some((m) => !isExternalRole(m.role)),
     audit: memberships.some((m) => m.role === "auditor" || m.role === "owner"),
   };
   return { id: u.id, agency_id: u.agency_id, display_name: u.display_name, memberships, scope };
@@ -53,12 +53,26 @@ export async function accountScope(q: Queryable, ctx: Ctx, accountId: string) {
       WHERE a.id = $1 AND c.agency_id = $2`, [accountId, ctx.actor.agency_id])).rows[0];
   // Чужой или несуществующий объект неразличимы для запрашивающего.
   if (!r || !allowedOperations(ctx.actor.memberships, { clientId: r.client_id, accountId: r.id }).size) throw new NotFoundError("Аккаунт не найден");
+  // Руководитель компании работает со страницей компании и агрегатами; личные аккаунты сотрудников (черновики, медиа, отчёты) ему закрыты.
+  const applicable = ctx.actor.memberships.filter((m) => !m.revoked_at && membershipApplies(m, { clientId: r.client_id, accountId: r.id }));
+  if (r.kind !== "company_page" && applicable.length && applicable.every((m) => m.role === "client_admin")) throw new NotFoundError("Аккаунт не найден");
   return r as { id: string; client_id: string; timezone: string; kind: string; display_name: string; publishing_paused: boolean; confidential_job_search: boolean };
 }
 
 /** Есть ли у пользователя роль агентства (не «клиент» и не «аудитор»), при наличии цели: применимая к ней. */
 export function isInternal(ctx: Ctx, t?: { clientId?: string; accountId?: string }) {
-  return ctx.actor.memberships.some((m) => !m.revoked_at && m.role !== "client" && m.role !== "auditor" && (!t || membershipApplies(m, t)));
+  return ctx.actor.memberships.some((m) => !m.revoked_at && !isExternalRole(m.role) && (!t || membershipApplies(m, t)));
+}
+
+/**
+ * Действие от имени аккаунта (одобрение, согласие, отметка «Сделал») выполняет только его владелец:
+ * роль «клиент» именно на этот аккаунт. Руководитель компании и агентство за сотрудника не решают.
+ */
+export function isAccountOwner(ctx: Ctx, accountId: string) {
+  return ctx.actor.memberships.some((m) => !m.revoked_at && m.role === "client" && m.scope_account_id === accountId);
+}
+export function assertAccountOwner(ctx: Ctx, accountId: string) {
+  if (!isAccountOwner(ctx, accountId)) throw new ForbiddenError("owner", "Это решение принимает только владелец аккаунта");
 }
 
 export function requireOp(ctx: Ctx, op: Operation, t: { clientId?: string; accountId?: string }) {

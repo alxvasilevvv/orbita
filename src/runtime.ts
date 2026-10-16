@@ -9,6 +9,7 @@ import { DemoLinkedInAdapter, LinkedInHttpAdapter, type SocialAdapter } from "./
 import type { WorkerContext } from "./worker/tick";
 import { dailyRetention } from "./services/lifecycle";
 import { weeklyAnalysisAll } from "./services/insights";
+import { b2bTick } from "./agents/orchestrator";
 
 export interface SecretStoreFull { get(ref: string): Promise<string | null>; set(ref: string, v: string): Promise<unknown> | unknown; delete(ref: string): Promise<void> }
 
@@ -42,6 +43,8 @@ export function workerContext(rt: Runtime, workerId: string, env = process.env):
     extraTasks: [
       (now) => dailyRetention(rt.db, rt.storage, now),
       (now) => weeklyAnalysisAll(rt.db, now),
+      // Агенты B2B: истечение, исполнение одобренных действий через API, планирование миссий, директор, отчётчик.
+      (now) => b2bTick({ db: rt.db, adapter: rt.adapter, secrets: rt.secrets, ai: rt.ai, apiVersion: env.LINKEDIN_API_VERSION }, now),
     ],
   };
 }

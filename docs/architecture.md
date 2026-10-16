@@ -43,6 +43,9 @@ src/
     team.ts        команда, роли, ёмкость, инциденты
     portal.ts      кабинет клиента
     exports.ts, lifecycle.ts  выгрузки, завершение обслуживания, удаление данных, сроки хранения
+    company.ts     B2B: бриф компании, кабинет руководителя, приглашения, профиль участия сотрудника, сигналы LinkedIn, портфель
+    missions.ts    B2B: миссии агентов, предложения сотрудникам, одобрение владельцем, «Сделал»
+  agents/          officer.ts (офицер безопасности), orchestrator.ts (стратег, планировщик, автор, исполнитель API, директор, отчётчик)
   server/          HTTP API (Fastify), OAuth LinkedIn
   worker/          отдельный процесс исполнителя
   ui/              React SPA
@@ -151,7 +154,13 @@ NULL не превращается в 0; накопительные снимки
 | GET | /api/portal, /api/portal/accounts/:id | Кабинет клиента | – |
 | GET/POST | /api/notifications, /read | Уведомления | – |
 
-Пользователи без роли агентства получают только маршруты из списков `CLIENT_ROUTES` и `AUDITOR_ROUTES` (`src/server/app.ts`), остальные возвращают 403.
+| GET/POST | /api/companies, /api/companies/portfolio, /api/companies/:id, /brief, /pause | Компания: обзор, бриф, аварийная остановка | Остановку снимает агентство |
+| GET/POST | /api/companies/:id/invites, /api/invites/:id/revoke, /api/invites/preview, /api/invites/accept | Приглашения сотрудников | Токен одноразовый, 72 часа |
+| GET/POST | /api/companies/:id/missions, /api/missions/:id, /cancel | Миссии агентов | `idem_key` на миссию, `trigger_key` на запуск агента |
+| GET/PATCH/POST | /api/me/actions, /api/me/participation, /api/mission-actions/:id/decision, /done | Предложения сотруднику и его решения | Обновление только из ожидаемого статуса |
+| POST | /api/accounts/:id/signals, /safety/restore, /confirm-employment | Сигналы LinkedIn, восстановление, подтверждение трудоустройства | Дедупликация сигнала |
+
+Пользователи без роли агентства получают только маршруты из списков `CLIENT_ROUTES`, `EMPLOYEE_ROUTES`, `CLIENT_ADMIN_ROUTES` и `AUDITOR_ROUTES` (`src/server/app.ts`), остальные возвращают 403.
 
 ## 8. Модель полномочий AI
 

@@ -24,6 +24,10 @@ export function intlLocale() { return locale === "en" ? "en-GB" : "ru-RU"; }
 
 /** Шаблоны динамических сообщений сервера: [регулярное выражение, функция перевода]. */
 const PATTERNS: [RegExp, (...m: string[]) => string][] = [
+  [/^Релевантность ([\d.]+); экспертиза совпадает с темой$/, (r) => `Relevance ${r}; expertise matches the topic`],
+  [/^Релевантность ([\d.]+); участие без текста$/, (r) => `Relevance ${r}; participation without text`],
+  [/^Релевантность ([\d.]+); автор по теме$/, (r) => `Relevance ${r}; author on the topic`],
+  [/^Согласовать пост страницы: (.+)$/, (x) => `Approve a page post: ${x}`],
   [/^Ошибки или неопределённость публикации: (\d+)$/, (n) => `Publishing errors or unknown outcomes: ${n}`],
   [/^Подключение LinkedIn: (\w+), нужно переподключение$/, (s) => `LinkedIn connection: ${s}, reconnection needed`],
   [/^(\d+) материал\(а\) ожидают согласования$/, (n) => `${n} post(s) awaiting approval`],
@@ -50,6 +54,26 @@ const PATTERNS: [RegExp, (...m: string[]) => string][] = [
 ];
 
 const STATIC: Record<string, string> = {
+  "Нет утверждённого брифа компании": "No approved company brief",
+  "Для регулируемой отрасли нужен утверждённый compliance": "A regulated industry requires approved compliance",
+  "Активность компании остановлена": "Company activity is stopped",
+  "Нет сотрудника с подходящей экспертизой для собственного материала": "No employee with matching expertise for own content",
+  "Мало подключённых сотрудников: нужно не меньше 4, чтобы участие выглядело естественно": "Too few connected employees: at least 4 are needed for participation to look natural",
+  "Ни одно действие не прошло проверки безопасности": "No action passed the safety checks",
+  "Ошибка планирования: агентство разбирается": "Planning error: the agency is looking into it",
+  "Согласовать пост страницы": "Approve a page post",
+  "Утвердить новую версию брифа компании": "Approve the new company brief version",
+  "Новая версия брифа ждёт утверждения агентства": "The new brief version is awaiting agency approval",
+  "Заполнить бриф компании: без него агенты не работают": "Fill in the company brief: agents do not work without it",
+  "подключён ли аккаунт": "whether the account is connected",
+  "общие цифры участия команды (от 5 человек)": "overall team participation numbers (from 5 people)",
+  "ваши пропуски и отказы": "your skips and refusals",
+  "ваш уровень риска": "your risk level",
+  "черновики до публикации": "drafts before publishing",
+  "сообщения о предупреждениях LinkedIn": "LinkedIn warning reports",
+  "Показы и взаимодействия поста недоступны без одобренного Community Management API или ручного импорта; действия команды не считаются результатом": "Post impressions and engagement are unavailable without an approved Community Management API or manual import; team actions do not count as results",
+  "Участник команды компании": "Company team member",
+  "по миссиям компании": "by company missions",
   "Цель недоступна по правилам агентства: взаимная поддержка между обслуживаемыми аккаунтами запрещена": "Target not allowed by agency rules: mutual support between managed accounts is prohibited",
   "Страница компании не связана с организацией LinkedIn: публикация от имени человека запрещена": "The company page is not linked to a LinkedIn organization: posting as a person is prohibited",
   "Подключён другой профиль LinkedIn": "A different LinkedIn profile is connected",

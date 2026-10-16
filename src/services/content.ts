@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { Queryable } from "../db/db";
-import { accountScope, audit, ConflictError, emit, isInternal, NotFoundError, requireOp, ValidationError, type Ctx } from "./context";
+import { accountScope, audit, ConflictError, emit, isAccountOwner, isInternal, NotFoundError, requireOp, ValidationError, type Ctx } from "./context";
 import { APPROVAL_SENSITIVE, assertTransition, contentHash, type ContentState } from "../core/contentStateMachine";
-import { assertNotSelfApproval } from "../core/permissions";
+import { assertNotSelfApproval, ForbiddenError } from "../core/permissions";
 import { resolveLocal } from "../core/time";
 import { activeStrategy } from "./accounts";
 import { blockingNotes, buildIsolatedContext, detectInjection, type AiProvider, DemoAiProvider, wrapUntrusted } from "../ai/guard";
@@ -107,6 +107,11 @@ export async function decide(ctx: Ctx, itemId: string, input: unknown) {
     const stage = it.state === "editorial_review" ? "editorial" : it.state === "client_review" ? "client" : null;
     if (!stage) throw new ConflictError(`Материал не ожидает согласования (состояние ${it.state})`);
     requireOp(ctx, stage === "editorial" ? "editorial_approve" : "client_approve", { clientId: it.client_id, accountId: it.account_id });
+    // Личный аккаунт сотрудника согласует сам сотрудник: руководитель компании согласует только материалы страницы компании.
+    if (stage === "client" && !isInternal(ctx, { clientId: it.client_id, accountId: it.account_id }) && !isAccountOwner(ctx, it.account_id)) {
+      const kind = (await q.query("SELECT kind FROM managed_accounts WHERE id = $1", [it.account_id])).rows[0]?.kind;
+      if (kind !== "company_page") throw new ForbiddenError("client_approve", "Материал личного аккаунта согласует его владелец");
+    }
     const req = (await q.query("SELECT * FROM approval_requests WHERE content_item_id = $1 AND stage = $2 AND status = 'pending' ORDER BY created_at DESC LIMIT 1", [it.id, stage])).rows[0];
     if (!req) throw new ConflictError("Нет активного запроса на согласование");
     if (d.approval_request_id && d.approval_request_id !== req.id) throw new ConflictError("Запрос устарел: появилась новая версия");

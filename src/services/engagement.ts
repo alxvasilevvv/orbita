@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { accountScope, audit, ConflictError, emit, isInternal, NotFoundError, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
+import { accountScope, assertAccountOwner, audit, ConflictError, emit, isInternal, NotFoundError, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
 import { activeStrategy, currentCapabilities, hasConsent } from "./accounts";
 import { engagementPriority } from "../core/heuristics";
 import { assertNotSelfApproval, can, ForbiddenError } from "../core/permissions";
@@ -86,7 +86,7 @@ export async function listQueue(ctx: Ctx, f: { account_id?: string; status?: str
   for (const r of rows) {
     const s = await activeStrategy(ctx.db, r.account_id);
     const caps = await currentCapabilities(ctx.db, r.account_id);
-    const write = caps.find((c: any) => c.operation === "write_comments");
+    const write = caps.find((c: any) => c.operation === "comment_member" || c.operation === "comment_org");
     out.push({ ...r, required_approver: requiredApprover(s, r.action_type), execution_mode: write?.mode === "api" ? "api" : "assisted", daily_cap: DAILY_ENGAGEMENT_CAP });
   }
   return out;
@@ -106,6 +106,7 @@ export async function decideRecommendation(ctx: Ctx, id: string, input: unknown)
   const s = await activeStrategy(ctx.db, r.account_id);
   const who = requiredApprover(s, r.action_type);
   requireOp(ctx, who === "client" ? "client_approve" : "publish", { clientId: r.client_id, accountId: r.account_id });
+  if (who === "client" && !isInternal(ctx, { clientId: r.client_id, accountId: r.account_id })) assertAccountOwner(ctx, r.account_id);
   if (d.decision === "approved") assertNotSelfApproval({ approverId: ctx.actor.id, versionAuthorId: r.created_by, allowSelfApproval: !!s?.restrictions?.allow_self_approval });
   if (d.comment_text && d.comment_text !== r.proposed_comment) throw new ConflictError("Текст изменился: создайте новую рекомендацию, согласуется конкретный текст");
   await ctx.db.query("UPDATE engagement_recommendations SET status = $2, approver_id = $3, approved_at = now() WHERE id = $1", [id, d.decision, ctx.actor.id]);

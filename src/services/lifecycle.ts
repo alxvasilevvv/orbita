@@ -11,6 +11,7 @@ import { cancelPendingJobs } from "./jobs";
  * обязана быть в списке: иначе процедура откажется работать (защита от забытой новой таблицы).
  */
 export const DELETION_ORDER = [
+  "mission_actions", "agent_runs", "agent_missions", "safety_events", "account_safety", "employee_profiles", "employee_invites", "company_briefs",
   "notifications", "outbox", "workflow_runs", "workflow_definitions", "exports",
   "engagement_recommendations", "engagement_sources",
   "approval_decisions", "approval_requests",
@@ -79,7 +80,7 @@ export async function deleteClientData(ctx: Ctx, deps: { systemDb: Db; storage: 
     // 3. База данных. Пользователи, у которых был доступ только как у представителей этого клиента, обезличиваются.
     const clientUsers = (await db.query(
       `SELECT DISTINCT m.user_id FROM memberships m LEFT JOIN managed_accounts a ON a.id = m.scope_account_id
-        WHERE m.role = 'client' AND (m.scope_client_id = $1 OR a.client_id = $1)`, [clientId])).rows.map((r: any) => r.user_id);
+        WHERE m.role IN ('client','client_admin') AND (m.scope_client_id = $1 OR a.client_id = $1)`, [clientId])).rows.map((r: any) => r.user_id);
     const counts: Record<string, number> = {};
     await db.tx(async (q) => {
       for (const t of DELETION_ORDER) {

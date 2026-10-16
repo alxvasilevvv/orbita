@@ -25,6 +25,7 @@ export async function grantRole(ctx: Ctx, input: unknown) {
   if (d.role === "owner" && !ctx.actor.memberships.some((m) => m.role === "owner")) throw new ForbiddenError("manage_team", "Роль владельца выдаёт только владелец");
   if (d.role === "client" && !d.scope_client_id && !d.scope_account_id) throw new ValidationError("Роль клиента выдаётся только на клиента или аккаунт");
   if (d.scope_client_id && d.scope_account_id) throw new ValidationError("Укажите либо клиента, либо аккаунт");
+  if (d.role === "client_admin" && !d.scope_client_id) throw new ValidationError("Роль руководителя компании выдаётся только на клиента");
   const u = (await ctx.db.query("SELECT id FROM users WHERE id = $1 AND agency_id = $2", [d.user_id, ctx.actor.agency_id])).rows[0];
   if (!u) throw new NotFoundError("Пользователь не найден");
   if (d.scope_client_id && !(await ctx.db.query("SELECT 1 FROM clients WHERE id = $1", [d.scope_client_id])).rows.length) throw new NotFoundError("Клиент не найден");

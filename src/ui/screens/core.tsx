@@ -49,7 +49,7 @@ export function AccountTable({ rows }: { rows: any[] }) {
         <tr key={r.id} className="click" tabIndex={0} onClick={() => go(`/accounts/${r.id}`)} onKeyDown={(e) => e.key === "Enter" && go(`/accounts/${r.id}`)}>
           <td><b>{r.display_name}</b><div className="muted small">{r.client_name}</div></td>
           <td>{t(KIND_RU[r.kind])}</td>
-          <td>{r.goal ?? <span className="muted">{t("нет стратегии")}</span>}</td>
+          <td>{r.goal ? tx(r.goal) : <span className="muted">{t("нет стратегии")}</span>}</td>
           <td>{r.manager_name ?? "–"}</td>
           <td>{r.connection_status === "none" ? <span className="muted">{t("не подключён")}</span> : r.connection_status}</td>
           <td className="num">{fmt(r.next_publication, r.timezone)}</td>

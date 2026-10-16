@@ -30,7 +30,7 @@ describe("резервная копия и восстановление", () => 
     expect(visible).toEqual(["Elena Petrova Consulting"]);
     // Приложение работает
     const mgr = actorCtx(restored, (await loadActor(restored, seed.users.manager))!);
-    expect((await acc.listAccounts(mgr)).length).toBe(3);
+    expect((await acc.listAccounts(mgr)).length).toBe(9);
     await db.close(); await restored.close();
   }, 120000);
 });

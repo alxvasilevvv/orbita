@@ -4,9 +4,13 @@
  */
 export const ROLES = [
   "owner", "ops_director", "strategist", "account_manager", "author", "designer",
-  "editor", "community_manager", "analyst", "client", "auditor",
+  "editor", "community_manager", "analyst", "client", "auditor", "client_admin",
 ] as const;
 export type Role = (typeof ROLES)[number];
+
+/** Роли вне агентства. Всё, что не перечислено здесь, считается ролью команды агентства. */
+export const EXTERNAL_ROLES: readonly Role[] = ["client", "client_admin", "auditor"];
+export const isExternalRole = (r: Role) => EXTERNAL_ROLES.includes(r);
 
 export const OPERATIONS = [
   "view", "edit_strategy", "approve_strategy", "create_content", "edit_content",
@@ -14,6 +18,7 @@ export const OPERATIONS = [
   "manage_connection", "delete", "bulk_action", "manage_team", "view_audit",
   "record_manual_action", "enter_metrics", "view_finance", "manage_tasks",
   "manage_clients", "manage_consent", "run_ai",
+  "view_company", "direct_agents", "manage_company_team",
 ] as const;
 export type Operation = (typeof OPERATIONS)[number];
 
@@ -23,7 +28,7 @@ export const ROLE_OPERATIONS: Record<Role, Operation[]> = {
   owner: ALL,
   ops_director: ALL.filter((o) => o !== "view_finance" && o !== "client_approve"),
   strategist: ["view", "edit_strategy", "approve_strategy", "create_content", "edit_content", "editorial_approve", "manage_tasks", "run_ai", "export"],
-  account_manager: ["view", "edit_strategy", "create_content", "edit_content", "schedule", "publish", "record_manual_action", "enter_metrics", "manage_tasks", "manage_connection", "manage_consent", "export", "run_ai", "bulk_action"],
+  account_manager: ["view", "view_company", "direct_agents", "manage_company_team", "edit_strategy", "create_content", "edit_content", "schedule", "publish", "record_manual_action", "enter_metrics", "manage_tasks", "manage_connection", "manage_consent", "export", "run_ai", "bulk_action"],
   author: ["view", "create_content", "edit_content", "run_ai"],
   designer: ["view", "edit_content"],
   editor: ["view", "edit_content", "editorial_approve", "run_ai"],
@@ -31,6 +36,9 @@ export const ROLE_OPERATIONS: Record<Role, Operation[]> = {
   analyst: ["view", "enter_metrics", "export"],
   client: ["view", "client_approve", "manage_consent"],
   auditor: ["view_audit"],
+  // Руководитель компании клиента: видит компанию, направляет агентов, приглашает сотрудников, согласует материалы страницы компании.
+  // Не даёт согласий и не одобряет действия за сотрудника: это делает владелец аккаунта (assertAccountOwner).
+  client_admin: ["view", "view_company", "direct_agents", "manage_company_team", "client_approve"],
 };
 
 export interface Membership {
@@ -48,6 +56,7 @@ export interface Target {
 export function membershipApplies(m: Membership, t: Target): boolean {
   if (m.revoked_at) return false;
   if (m.role === "client" && !m.scope_client_id && !m.scope_account_id) return false;
+  if (m.role === "client_admin" && (!m.scope_client_id || m.scope_account_id)) return false;
   if (m.scope_account_id) return !!t.accountId && m.scope_account_id === t.accountId;
   if (m.scope_client_id) return !!t.clientId && m.scope_client_id === t.clientId;
   return true; // уровень агентства
@@ -65,7 +74,7 @@ export function can(ms: Membership[], op: Operation, t: Target): boolean {
 
 /** Агентские роли, видящие все клиенты (для фильтра реестра). */
 export function agencyWide(ms: Membership[]): boolean {
-  return ms.some((m) => !m.revoked_at && !m.scope_client_id && !m.scope_account_id && m.role !== "client" && m.role !== "auditor");
+  return ms.some((m) => !m.revoked_at && !m.scope_client_id && !m.scope_account_id && !isExternalRole(m.role));
 }
 
 export class ForbiddenError extends Error {

@@ -23,6 +23,8 @@ import * as exp from "../services/exports";
 import * as team from "../services/team";
 import * as life from "../services/lifecycle";
 import * as portal from "../services/portal";
+import * as company from "../services/company";
+import * as missions from "../services/missions";
 import { CAPABILITY_CATALOG } from "../core/capabilities";
 import { STRATEGY_TEMPLATES } from "../core/templates";
 import { dailyRequestBudget } from "../core/heuristics";
@@ -42,11 +44,22 @@ const CLIENT_ROUTES = new Set([
   "POST /api/accounts/:id/consents", "POST /api/accounts/:id/consents/:scope/revoke",
   "GET /api/notifications", "POST /api/notifications/read", "POST /api/engagement/:id/decision",
 ]);
+const EMPLOYEE_ROUTES = new Set([
+  "GET /api/me/participation", "PATCH /api/me/participation/:accountId", "GET /api/me/actions",
+  "POST /api/mission-actions/:id/decision", "POST /api/mission-actions/:id/done", "POST /api/accounts/:id/signals",
+]);
+const CLIENT_ADMIN_ROUTES = new Set([
+  "GET /api/me", "PATCH /api/me", "GET /api/meta", "GET /api/notifications", "POST /api/notifications/read",
+  "GET /api/companies", "GET /api/companies/:id", "POST /api/companies/:id/brief", "POST /api/companies/:id/pause",
+  "GET /api/companies/:id/invites", "POST /api/companies/:id/invites", "POST /api/invites/:id/revoke", "POST /api/accounts/:id/confirm-employment",
+  "GET /api/companies/:id/missions", "POST /api/companies/:id/missions", "GET /api/missions/:id", "POST /api/missions/:id/cancel",
+  "GET /api/content/:id", "POST /api/content/:id/decision", "GET /api/reports/:id", "GET /api/media/:id/url",
+]);
 const AUDITOR_ROUTES = new Set(["GET /api/me", "PATCH /api/me", "GET /api/meta", "GET /api/audit", "GET /api/notifications", "POST /api/notifications/read"]);
 function externalRouteAllowed(ctx: Ctx, method: string, url: string) {
   const key = `${method} ${url}`;
   const roles = new Set(ctx.actor.memberships.map((m) => m.role));
-  return (roles.has("client") && CLIENT_ROUTES.has(key)) || (roles.has("auditor") && AUDITOR_ROUTES.has(key));
+  return (roles.has("client") && (CLIENT_ROUTES.has(key) || EMPLOYEE_ROUTES.has(key))) || (roles.has("client_admin") && CLIENT_ADMIN_ROUTES.has(key)) || (roles.has("auditor") && AUDITOR_ROUTES.has(key));
 }
 
 export interface AppDeps {
@@ -56,6 +69,7 @@ export interface AppDeps {
   storage?: Storage;
   scanner?: MalwareScanner;
   ai?: AiProvider;
+  mailer?: import("../services/notify").Mailer;
 }
 
 /** Простой лимитер запросов на пользователя/IP: защита от случайных циклов в клиентах. Основная защита: WAF. */
@@ -81,6 +95,7 @@ export function buildApp(deps: AppDeps) {
   });
   app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: MEDIA_LIMITS.video.maxBytes }, (_req, body, done) => done(null, body));
   const limit = rateLimiter(Number(process.env.API_RATE_LIMIT_PER_MIN ?? 600));
+  const inviteLimit = rateLimiter(20);
 
   app.addHook("onRequest", async (req, reply) => {
     if (req.url.startsWith("/api/") && !limit(`${req.headers["x-user-id"] ?? req.headers["x-authenticated-user-id"] ?? req.ip}`)) {
@@ -157,7 +172,7 @@ export function buildApp(deps: AppDeps) {
     const u = (await deps.db.query("SELECT locale FROM users WHERE id = $1", [ctx.actor.id])).rows[0];
     const internal = isInternal(ctx);
     const roles = new Set(ctx.actor.memberships.map((m) => m.role));
-    return { id: ctx.actor.id, display_name: ctx.actor.display_name, agency_id: ctx.actor.agency_id, roles: [...roles], agency_wide: agencyWide(ctx.actor.memberships), internal, client_only: !internal && roles.has("client"), auditor_only: !internal && !roles.has("client") && roles.has("auditor"), locale: u?.locale ?? "ru", agency_ops: [...allowedOperations(ctx.actor.memberships, {})] };
+    return { id: ctx.actor.id, display_name: ctx.actor.display_name, agency_id: ctx.actor.agency_id, roles: [...roles], agency_wide: agencyWide(ctx.actor.memberships), internal, client_only: !internal && roles.has("client") && !roles.has("client_admin"), company_admin: !internal && roles.has("client_admin"), employee: roles.has("client"), company_ids: ctx.actor.memberships.filter((m) => m.role === "client_admin" && !m.revoked_at).map((m) => m.scope_client_id), auditor_only: !internal && !roles.has("client") && !roles.has("client_admin") && roles.has("auditor"), locale: u?.locale ?? "ru", agency_ops: [...allowedOperations(ctx.actor.memberships, {})] };
   }));
   app.patch("/api/me", h(async (ctx, req) => {
     const d = z.object({ locale: z.enum(["ru", "en"]) }).parse(req.body);
@@ -295,6 +310,39 @@ export function buildApp(deps: AppDeps) {
 
   // Кабинет клиента
   app.get("/api/portal", h(async (ctx) => portal.portalHome(ctx)));
+
+  // B2B: компании, агенты, миссии, сотрудники
+  app.get("/api/companies", h(async (ctx) => company.listCompanies(ctx)));
+  app.get("/api/companies/portfolio", h(async (ctx) => company.portfolio(ctx, deps.db)));
+  app.get("/api/companies/:id", h<{ id: string }>(async (ctx, req) => company.companyOverview(ctx, deps.db, req.params.id)));
+  app.post("/api/companies/:id/brief", h<{ id: string }>(async (ctx, req) => company.proposeBrief(ctx, req.params.id, req.body)));
+  app.post("/api/briefs/:id/approve", h<{ id: string }>(async (ctx, req) => company.approveBrief(ctx, req.params.id, req.body)));
+  app.post("/api/companies/:id/pause", h<{ id: string }>(async (ctx, req) => company.pauseCompany(ctx, deps.db, req.params.id, req.body)));
+  app.get("/api/companies/:id/invites", h<{ id: string }>(async (ctx, req) => company.listInvites(ctx, deps.db, req.params.id)));
+  app.post("/api/companies/:id/invites", h<{ id: string }>(async (ctx, req) => company.createInvite(ctx, deps.db, req.params.id, req.body, { mailer: deps.mailer, exposeLink: deps.authMode === "dev" })));
+  app.post("/api/invites/:id/revoke", h<{ id: string }>(async (ctx, req) => company.revokeInvite(ctx, deps.db, req.params.id)));
+  app.get("/api/invites/preview", async (req: FastifyRequest<{ Querystring: { token?: string } }>) => {
+    if (!inviteLimit(req.ip)) throw Object.assign(new Error("Слишком много попыток"), { status: 429 });
+    return company.invitePreview(deps.db, String(req.query.token ?? ""));
+  });
+  app.post("/api/invites/accept", async (req: FastifyRequest) => {
+    if (!inviteLimit(req.ip)) throw Object.assign(new Error("Слишком много попыток"), { status: 429 });
+    const authed = deps.authMode === "header" ? (req.headers["x-authenticated-user-id"] as string | undefined) ?? null : null;
+    // В production принять приглашение может только вошедший через IdP пользователь, которому оно выдано.
+    return company.acceptInvite(deps.db, req.body, authed, deps.authMode === "header");
+  });
+  app.post("/api/accounts/:id/confirm-employment", h<{ id: string }>(async (ctx, req) => company.confirmEmployment(ctx, deps.db, req.params.id)));
+  app.post("/api/accounts/:id/signals", h<{ id: string }>(async (ctx, req) => company.reportSignal(ctx, deps.db, req.params.id, req.body)));
+  app.post("/api/accounts/:id/safety/restore", h<{ id: string }>(async (ctx, req) => company.restoreAccount(ctx, deps.db, req.params.id)));
+  app.get("/api/companies/:id/missions", h<{ id: string }>(async (ctx, req) => missions.listMissions(ctx, req.params.id)));
+  app.post("/api/companies/:id/missions", h<{ id: string }>(async (ctx, req) => missions.createMission(ctx, { systemDb: deps.db, ai: aiProvider }, req.params.id, req.body)));
+  app.get("/api/missions/:id", h<{ id: string }>(async (ctx, req) => missions.missionDetail(ctx, deps.db, req.params.id)));
+  app.post("/api/missions/:id/cancel", h<{ id: string }>(async (ctx, req) => missions.cancelMission(ctx, deps.db, req.params.id, req.body)));
+  app.get("/api/me/participation", h(async (ctx) => company.myParticipation(ctx)));
+  app.patch("/api/me/participation/:accountId", h<{ accountId: string }>(async (ctx, req) => company.updateMyProfile(ctx, req.params.accountId, req.body)));
+  app.get("/api/me/actions", h(async (ctx) => missions.myActions(ctx)));
+  app.post("/api/mission-actions/:id/decision", h<{ id: string }>(async (ctx, req) => missions.decideAction(ctx, deps.db, req.params.id, req.body)));
+  app.post("/api/mission-actions/:id/done", h<{ id: string }>(async (ctx, req) => missions.markActionDone(ctx, req.params.id, req.body, deps.db)));
   app.get("/api/portal/accounts/:id", h<{ id: string }>(async (ctx, req) => portal.portalAccount(ctx, req.params.id)));
 
   // LinkedIn OAuth. Работает только при заданных LINKEDIN_CLIENT_ID/SECRET/REDIRECT_URI.

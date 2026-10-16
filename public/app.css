@@ -216,3 +216,9 @@ ol.steps li.todo { color: var(--ink); font-weight: 500; }
 }
 input[type=range] { accent-color: var(--action); width: 100%; }
 .tabs { flex-wrap: wrap; }
+
+/* Формы в панелях: подпись над полем */
+.form label:not(.row):not(.chip) { display: block; margin: 0 0 12px; }
+.form label:not(.row):not(.chip) > input:not([type=checkbox]), .form label:not(.row):not(.chip) > select, .form label:not(.row):not(.chip) > textarea { display: block; width: 100%; margin-top: 4px; box-sizing: border-box; }
+.form fieldset { margin: 0 0 12px; border: 1px solid var(--line, #ddd); border-radius: 8px; padding: 8px 12px; }
+.form label.row { margin: 4px 0; }

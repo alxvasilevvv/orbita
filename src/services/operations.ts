@@ -2,7 +2,7 @@ import { z } from "zod";
 import { accountScope, audit, ConflictError, isInternal, NotFoundError, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
 import { aggregate, interactionRateByImpressions, type MetricValue } from "../core/metrics";
 import { capacityCheck, taskPriority } from "../core/heuristics";
-import { agencyWide, can, ForbiddenError } from "../core/permissions";
+import { agencyWide, can, ForbiddenError, isExternalRole } from "../core/permissions";
 
 export async function agencyOverview(ctx: Ctx) {
   const vis = visibleAccountsFilter(ctx, "a", 2);
@@ -36,7 +36,7 @@ export async function agencyOverview(ctx: Ctx) {
 
 export async function listTasks(ctx: Ctx, f: { mine?: boolean; status?: string; limit?: number } = {}) {
   // Внутренние задачи команды клиенту не показываются.
-  if (ctx.actor.memberships.every((m) => m.role === "client" || m.role === "auditor")) return [];
+  if (ctx.actor.memberships.every((m) => isExternalRole(m.role))) return [];
   const vis = visibleAccountsFilter(ctx, "a", 2);
   const params: unknown[] = [ctx.actor.agency_id, ...vis.params];
   let where = `c.agency_id = $1 AND (t.account_id IS NULL AND ${agencyWide(ctx.actor.memberships)} OR ${vis.sql})`;

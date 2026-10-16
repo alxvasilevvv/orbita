@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { accountScope, audit, ConflictError, emit, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
+import { accountScope, assertAccountOwner, audit, ConflictError, emit, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
 import { appAccessFromEnv, CAPABILITY_CATALOG, resolveCapabilities, type AccountKind } from "../core/capabilities";
 import { isValidTimeZone } from "../core/time";
 import { cancelPendingJobs } from "./jobs";
@@ -26,11 +26,14 @@ export async function listAccounts(ctx: Ctx, filter: { q?: string; attention?: b
      WHERE ${where}
      ORDER BY c.name, a.display_name
      LIMIT $${params.length - 1} OFFSET $${params.length}`, params)).rows;
+  // Аккаунт сотрудника ведётся по брифу компании и миссиям агентов, а не по собственной стратегии и контент-плану.
+  for (const r of rows) if (r.kind === "employee" && !r.goal) r.goal = "Участник команды компании";
   const out = rows.map((r: any) => ({ ...r, attention_reasons: attentionReasons(r), plan_progress: planProgress(r) }));
   return filter.attention ? out.filter((r) => r.attention_reasons.length) : out;
 }
 
 function planProgress(r: any): string {
+  if (r.kind === "employee" && r.posts_per_week == null) return "по миссиям компании";
   if (r.posts_per_week == null) return "план не утверждён";
   const planned = Math.round(Number(r.posts_per_week) * 30 / 7);
   return `${r.published_30d} из ${planned} за 30 дней`;
@@ -119,9 +122,11 @@ const ConsentInput = z.object({
 export async function grantConsent(ctx: Ctx, accountId: string, input: unknown) {
   const a = await accountScope(ctx.db, ctx, accountId);
   requireOp(ctx, "manage_consent", { clientId: a.client_id, accountId });
+  // Согласие за сотрудника не даёт ни работодатель, ни агентство: только владелец аккаунта в платформе.
+  if (a.kind === "employee") assertAccountOwner(ctx, accountId);
   const d = ConsentInput.parse(input);
   return ctx.db.tx(async (q) => {
-    const c = (await q.query("INSERT INTO consents(client_id, account_id, action_scope, granted_by_name, evidence_ref) VALUES ($1,$2,$3,$4,$5) RETURNING *", [a.client_id, accountId, d.action_scope, d.granted_by_name, d.evidence_ref])).rows[0];
+    const c = (await q.query("INSERT INTO consents(client_id, account_id, action_scope, granted_by_name, evidence_ref, granted_by_user_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [a.client_id, accountId, d.action_scope, d.granted_by_name, d.evidence_ref, ctx.actor.id])).rows[0];
     await audit(q, ctx, { action: "consent.granted", entity_type: "consent", entity_id: c.id, client_id: a.client_id, account_id: accountId, details: { scope: d.action_scope } });
     return c;
   });

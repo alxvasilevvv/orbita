@@ -77,11 +77,11 @@ export const money = (v: number | null | undefined) => v == null ? "–" : new I
 export const num = (v: number | null | undefined, digits = 0) => v == null ? "–" : new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: digits }).format(v);
 
 /** Текущий пользователь и его агентские права для показа кнопок. Проверки всё равно выполняет сервер. */
-export type Me = { id: string; display_name: string; roles: string[]; agency_wide: boolean; client_only: boolean; auditor_only?: boolean; internal?: boolean; locale: "ru" | "en"; agency_ops: string[] };
+export type Me = { id: string; display_name: string; roles: string[]; agency_wide: boolean; client_only: boolean; auditor_only?: boolean; internal?: boolean; company_admin?: boolean; employee?: boolean; company_ids?: string[]; locale: "ru" | "en"; agency_ops: string[] };
 export const MeCtx = createContext<Me | null>(null);
 export function useMe() { return useContext(MeCtx); }
 
-export const ROLE_RU: Record<string, string> = { owner: "Владелец", ops_director: "Операционный директор", strategist: "Стратег", account_manager: "Аккаунт-менеджер", author: "Автор", designer: "Дизайнер", editor: "Редактор", community_manager: "Community manager", analyst: "Аналитик", client: "Клиент", auditor: "Аудитор" };
+export const ROLE_RU: Record<string, string> = { owner: "Владелец", ops_director: "Операционный директор", strategist: "Стратег", account_manager: "Аккаунт-менеджер", author: "Автор", designer: "Дизайнер", editor: "Редактор", community_manager: "Community manager", analyst: "Аналитик", client: "Клиент", auditor: "Аудитор", client_admin: "Руководитель компании" };
 
 /** Загрузка файла как application/octet-stream (без multipart). */
 export async function uploadFile(path: string, file: File) {

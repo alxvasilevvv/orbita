@@ -86,5 +86,47 @@ export async function seedDemo(db: Db) {
   const { seedBuiltinWorkflows } = await import("../services/workflows");
   await seedBuiltinWorkflows(db, ag, u.ops);
   await db.query("INSERT INTO time_entries(client_id, account_id, user_id, minutes, work_date) VALUES ($1,$2,$3,240,current_date - 3),($1,$2,$4,180,current_date - 2)", [c1, a1, u.author, u.manager]);
+  // B2B-демо: руководитель Northwind, бриф компании, реальные сотрудники с подтверждённым трудоустройством, пост страницы.
+  const leader = await mk("cto@northwind.example", "Кира Орлова (CTO Northwind)", 0, ["en"]);
+  await m(leader, "client_admin", c1);
+  (u as any).leader = leader;
+  await db.query(`INSERT INTO company_briefs(client_id, version, status, industry, positioning, topics, forbidden_topics, disclosure_mode, disclosure_text, intensity, email_domains, created_by, approved_by, approved_at)
+    VALUES ($1, 1, 'approved', 'general', 'Международная инженерная компания: предиктивное обслуживание оборудования, сильная команда разработчиков и инженеров данных.', $2, '{слияние,M&A,финансовые показатели}', 'profile', '#employee', 'low', '{northwind.example}', $3, $4, now())`,
+    [c1, JSON.stringify([
+      { tag: "kubernetes", weight: 1, keywords: ["k8s", "кластер", "платформ"] },
+      { tag: "ml", weight: 1.5, keywords: ["модел", "предиктив", "machine learning"] },
+      { tag: "data", weight: 1, keywords: ["данн", "telemetry", "телеметр"] },
+      { tag: "security", weight: 1, keywords: ["безопасн", "security"] },
+      { tag: "hiring", weight: 1, keywords: ["ваканси", "нанима", "hiring", "открыта позиция"] },
+    ]), leader, u.manager]);
+  const employees: [string, string, string[], string][] = [
+    ["anna.k@northwind.example", "Anna Kovacs (ML Lead)", ["ml", "data"], "Europe/Budapest"],
+    ["raj.p@northwind.example", "Raj Patel (Data Engineer)", ["data", "kubernetes"], "Asia/Kolkata"],
+    ["lena.m@northwind.example", "Lena Müller (Platform Engineer)", ["kubernetes", "security"], "Europe/Berlin"],
+    ["tom.w@northwind.example", "Tom Walsh (Security Engineer)", ["security"], "Europe/Dublin"],
+    ["mei.l@northwind.example", "Mei Lin (ML Engineer)", ["ml"], "Asia/Singapore"],
+    ["omar.h@northwind.example", "Omar Haddad (Head of Talent)", ["hiring"], "Asia/Dubai"],
+  ];
+  for (const [email, name, tags, tz] of employees) {
+    const uid = await mk(email, name, 0, ["en"]);
+    const acc_ = (await db.query("INSERT INTO managed_accounts(client_id, kind, display_name, primary_language, timezone, manager_id, status) VALUES ($1,'employee',$2,'en',$3,$4,'active') RETURNING id", [c1, name, tz, u.manager])).rows[0].id;
+    await m(uid, "client", null, acc_);
+    await db.query("INSERT INTO employee_profiles(account_id, client_id, expertise_tags, frequency, self_reported_activity, employment_verified_at, verification_method) VALUES ($1,$2,$3,'weekly','weekly', now(), 'email_domain')", [acc_, c1, tags]);
+    await db.query("INSERT INTO account_safety(account_id, client_id, ramp_started_at) VALUES ($1,$2, now() - interval '30 days')", [acc_, c1]);
+    await writeCapabilities(db, acc_, c1, "employee", "none", [], "seed");
+    for (const scope of ["react", "comment", "ai_processing", "publish_post"]) {
+      await db.query("INSERT INTO consents(client_id, account_id, action_scope, granted_by_name, evidence_ref, granted_by_user_id) VALUES ($1,$2,$3,$4,'Согласие в платформе (демо)',$5)", [c1, acc_, scope, name, uid]);
+    }
+    if (email.startsWith("anna")) {
+      (u as any).employee = uid;
+      const src = (await db.query("INSERT INTO knowledge_sources(client_id, account_id, title, kind, body, created_by) VALUES ($1,$2,'Интервью Anna, октябрь','interview','Перенос инференса на отдельный кластер, телеметрия пачками.',$3) RETURNING id", [c1, acc_, uid])).rows[0].id;
+      await db.query("INSERT INTO verified_claims(client_id, account_id, statement, source_id, confirmed_by, valid_as_of) VALUES ($1,$2,'Инференс моделей вынесли в отдельный кластер, потому что телеметрия оборудования приходит пачками.',$3,'Anna Kovacs','2026-10-01')", [c1, acc_, src]);
+    }
+  }
+  // Опубликованный пост страницы компании: цель для первой миссии.
+  const pageItem = await item(c1, a2, "Как мы снизили простои на 18% с предиктивными моделями", "draft", "Наша ML-команда перевела три завода на предиктивное обслуживание: модели на телеметрии оборудования, кластер Kubernetes для инференса, отдельный контур безопасности данных. Делимся архитектурой и тем, что не сработало.", u.author);
+  await db.query("UPDATE content_items SET state = 'published' WHERE id = $1", [pageItem]);
+  await db.query("INSERT INTO external_publications(client_id, account_id, content_item_id, external_id, url, evidence_type, published_at) VALUES ($1,$2,$3,'urn:li:activity:7300000000000000042','https://www.linkedin.com/feed/update/urn:li:activity:7300000000000000042/','manual_mark', now() - interval '3 hours')", [c1, a2, pageItem]);
+  await db.query("INSERT INTO metric_snapshots(client_id, account_id, metric_key, value, observed_at, source, availability_status) VALUES ($1,$2,'followers',1840, now() - interval '31 days','manual_entry','available'),($1,$2,'followers',2115, now() - interval '1 day','manual_entry','available')", [c1, a2]);
   return { agency_id: ag, seeded: true, users: u };
 }

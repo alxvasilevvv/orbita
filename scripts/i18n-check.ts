@@ -12,7 +12,7 @@ const files: string[] = [];
 const walk = (d: string) => { for (const f of readdirSync(d)) { const p = join(d, f); if (statSync(p).isDirectory()) walk(p); else if (/\.tsx?$/.test(f) && !f.endsWith("en.ts") && !f.endsWith("i18n.ts")) files.push(p); } };
 walk("src/ui");
 // Строки, приходящие с сервера и переводимые в интерфейсе.
-const serverFiles = ["src/services/notify.ts", "src/services/workflows.ts", "src/services/onboarding.ts", "src/services/engagement.ts", "src/ai/guard.ts"];
+const serverFiles = ["src/agents/officer.ts", "src/agents/orchestrator.ts", "src/services/company.ts", "src/services/missions.ts", "src/services/notify.ts", "src/services/workflows.ts", "src/services/onboarding.ts", "src/services/engagement.ts", "src/ai/guard.ts"];
 
 const found = new Set<string>();
 const add = (s: string) => { if (CYR.test(s)) found.add(s.replace(/\\"/g, '"')); };

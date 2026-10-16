@@ -11,6 +11,7 @@ import { WorkflowsPage } from "./screens/workflows";
 import { TeamPage, IncidentsPage } from "./screens/team";
 import { AgencyReportPage, ExportsPage } from "./screens/agency";
 import { PortalPage } from "./screens/portal";
+import { CompaniesPage, CompanyPage, MissionPage, MyActions, InvitePage } from "./screens/company";
 
 function Bell() {
   const [open, setOpen] = useState(false);
@@ -50,11 +51,13 @@ function App() {
 
   const m = me.data;
   const ops = new Set(m?.agency_ops ?? []);
-  const nav: [string, string, number?][] = m?.client_only
+  const nav: [string, string, number?][] = m?.company_admin
+    ? [["/", "Компания"], ...(m.employee ? [["/me", "Мои предложения"] as [string, string]] : [])]
+    : m?.client_only
     ? [["/", "Кабинет клиента"]]
     : m?.auditor_only ? [["/", "Журнал аудита"]]
     : [
-        ["/", "Обзор"], ["/accounts", "Аккаунты"], ["/calendar", "Календарь"], ["/approvals", "Согласования", approvals.data?.length],
+        ["/", "Обзор"], ["/companies", "Компании"], ["/accounts", "Аккаунты"], ["/calendar", "Календарь"], ["/approvals", "Согласования", approvals.data?.length],
         ["/engagement", "Взаимодействия"], ["/tasks", "Задачи"],
         ...(ops.has("view_finance") ? [["/agency-report", "Экономика агентства"] as [string, string]] : []),
         ...(ops.has("manage_team") ? [["/team", "Команда"] as [string, string]] : []),
@@ -66,10 +69,16 @@ function App() {
   const active = (p: string) => (p === "/" ? route === "/" : route.startsWith(p));
   let page: ReactNode;
   const acc = route.match(/^\/accounts\/([^/]+)$/), c = route.match(/^\/content\/([^/]+)$/), rep = route.match(/^\/reports\/([^/]+)$/);
-  if (!m) page = me.error ? <div className="notice info">{t("Выберите пользователя внизу слева, чтобы войти.")}</div> : <p className="muted">{t("Загрузка…")}</p>;
+  const comp = route.match(/^\/companies\/([^/]+)$/), mis = route.match(/^\/missions\/([^/]+)$/), inv = route.match(/^\/invite\/([^/]+)$/);
+  if (inv) page = <InvitePage token={inv[1]} onAccepted={(id) => switchUser(id)} />;
+  else if (!m) page = me.error ? <div className="notice info">{t("Выберите пользователя внизу слева, чтобы войти.")}</div> : <p className="muted">{t("Загрузка…")}</p>;
   else if (m.auditor_only) page = <Audit />;
+  else if (m.company_admin) page = mis ? <MissionPage id={mis[1]} /> : c ? <ContentPage id={c[1]} /> : rep ? <ReportPage id={rep[1]} /> : route.startsWith("/me") ? <MyActions /> : <CompanyPage id={comp?.[1] ?? m.company_ids![0]} />;
   else if (m.client_only) page = c ? <ContentPage id={c[1]} /> : rep ? <ReportPage id={rep[1]} /> : <PortalPage />;
   else if (acc) page = <AccountPage id={acc[1]} />;
+  else if (comp) page = <CompanyPage id={comp[1]} />;
+  else if (mis) page = <MissionPage id={mis[1]} />;
+  else if (route.startsWith("/companies")) page = <CompaniesPage />;
   else if (c) page = <ContentPage id={c[1]} />;
   else if (rep) page = <ReportPage id={rep[1]} />;
   else if (route.startsWith("/accounts")) page = <Accounts />;

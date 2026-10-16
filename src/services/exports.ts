@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isExternalRole } from "../core/permissions";
 import type { Db } from "../db/db";
 import { accountScope, audit, emit, NotFoundError, requireOp, ValidationError, type Ctx } from "./context";
 import { can, ForbiddenError } from "../core/permissions";
@@ -16,7 +17,7 @@ export async function requestExport(ctx: Ctx, input: unknown) {
   } else {
     requireOp(ctx, "export", { clientId: clientId!, accountId: d.account_id });
   }
-  const internal = ctx.actor.memberships.some((m) => m.role !== "client" && !m.revoked_at);
+  const internal = ctx.actor.memberships.some((m) => !isExternalRole(m.role) && !m.revoked_at);
   if (!internal && !CLIENT_ALLOWED.has(d.kind)) throw new ForbiddenError("export");
   if (d.kind === "time" && !can(ctx.actor.memberships, "view_finance", {})) throw new ForbiddenError("export");
   const row = (await ctx.db.query("INSERT INTO exports(agency_id, client_id, account_id, requested_by, kind) VALUES ($1,$2,$3,$4,$5) RETURNING id, status, kind, created_at", [ctx.actor.agency_id, clientId, d.account_id ?? null, ctx.actor.id, d.kind])).rows[0];
