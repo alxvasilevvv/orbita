@@ -100,6 +100,13 @@ export async function writeCapabilities(q: { query: Ctx["db"]["query"] }, accoun
   return caps;
 }
 
+/** Возможности X-аккаунта: публикация твитов через API при активном подключении, иначе через человека. */
+export async function writeXCapability(q: { query: Ctx["db"]["query"] }, accountId: string, clientId: string, connected: boolean) {
+  await q.query(`INSERT INTO capability_snapshots(client_id, account_id, operation, mode, permission, access_basis, api_version, unavailable_reason, alternative, source, checked_at)
+      VALUES ($1,$2,'publish_post_x',$3,'tweet.write', $4,'2', $5,'Публикация сотрудником вручную','x_oauth', now())`,
+    [clientId, accountId, connected ? 'api' : 'assisted', connected ? 'X API v2; scopes: tweet.write users.read offline.access' : null, connected ? null : 'Аккаунт X не подключён через OAuth']);
+}
+
 export async function currentCapabilities(q: { query: Ctx["db"]["query"] }, accountId: string) {
   return (await q.query(
     `SELECT DISTINCT ON (operation) operation, mode, permission, access_basis, api_version, checked_at, unavailable_reason, alternative, source

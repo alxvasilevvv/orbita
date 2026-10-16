@@ -11,7 +11,7 @@ if (prod && !process.env.SECRETS_KEY) throw new Error("SECRETS_KEY обязат�
 
 const db = await openDb();
 await migrate(db);
-if (process.env.SEED_DEMO === "1" || (!prod && process.env.SEED_DEMO !== "0")) await seedDemo(db); else await ensureReferenceData(db);
+if (process.env.SEED_DEMO === "1" || (!prod && process.env.SEED_DEMO !== "0")) await seedDemo(db, { x: true }); else await ensureReferenceData(db);
 
 const rt = createRuntime(db);
 const app = buildApp({ ...rt, authMode });

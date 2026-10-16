@@ -25,13 +25,19 @@ function Stepper({ step }: { step: number }) {
 export function MyAgentPage() {
   const s = useApi<any>("/api/me/agent");
   const [local, setLocal] = useState<number | null>(null);
+  const [acc, setAcc] = useState(0);
   return (
     <Loadable s={s}>{(d) => {
-      const x = d.accounts[0];
+      const x = d.accounts[Math.min(acc, d.accounts.length - 1)] ?? d.accounts[0];
       if (!x) return <div className="notice info">{t("Личный агент работает для личных аккаунтов сотрудников.")}</div>;
+      const switcher = d.accounts.length > 1 ? (
+        <div className="tabs" role="tablist">{d.accounts.map((a: any, i: number) => (
+          <button key={a.account.id} role="tab" aria-selected={i === acc} className={i === acc ? "on" : ""} onClick={() => setAcc(i)}>
+            <span className={`net-badge ${a.network === "x" ? "x" : "li"}`} style={{ width: 18, height: 18, fontSize: 10 }}>{a.network === "x" ? "X" : "in"}</span> {a.account.display_name}
+          </button>))}</div>) : null;
       const server: Record<string, number> = { role: 1, interview: x.linkedin.connected ? 3 : 2, passport: 4, photos: 5, autopilot: 5, payment: 6, done: 7 };
       const step = local ?? server[x.agent.onboarding_step] ?? 0;
-      if (x.agent.onboarding_step === "done" && local == null) return <AgentHome x={x} cat={d.catalog} reload={s.reload} />;
+      if (x.agent.onboarding_step === "done" && local == null) return <>{switcher}<AgentHome x={x} cat={d.catalog} reload={s.reload} /></>;
       const next = (n?: number) => { setLocal(n ?? null); s.reload(); };
       return (
         <div className="onboard">
@@ -236,7 +242,7 @@ function Architecture({ x }: { x: any }) {
     ["Автор (Opus)", t("пишет из ваших фактов")],
     ["Офицер безопасности", t("лимиты, риск, тексты")],
     ["Окно отмены", `${x.agent.veto_hours} ${t("ч")}`],
-    ["LinkedIn API", x.linkedin.api ? t("подключено") : t("подключите профиль")],
+    [x.network === "x" ? "X API" : "LinkedIn API", x.linkedin.api ? t("подключено") : t("подключите профиль")],
   ];
   return (
     <div className="arch" aria-label={t("Как работает ваш агент")}>
@@ -253,8 +259,10 @@ function AgentHome({ x, cat, reload }: { x: any; cat: any; reload: () => void })
   const open = x.posts.filter((p: any) => ["needs_owner", "review", "veto_window", "planned", "scheduled"].includes(p.status));
   const past = x.posts.filter((p: any) => !["needs_owner", "review", "veto_window", "planned", "scheduled"].includes(p.status));
   const level = cat.strategies.find((p: any) => p.key === x.strategy.effective);
+  const isX = x.network === "x";
+  const connect = () => run(async () => { if (isX) { const r = await api(`/api/me/agent/${x.account.id}/x/connect`, { method: "POST" }); if (r.authorize_url) location.href = r.authorize_url; else reload(); } else { const r = await api(`/api/accounts/${x.account.id}/oauth/start`); location.href = r.authorize_url; } }, isX ? "Подключаем X" : "Переходим в LinkedIn");
   return (<>
-    <h1>{t("Мой агент")}</h1>
+    <h1>{t("Мой агент")} <span className={`net-badge ${isX ? "x" : "li"}`}>{isX ? "X" : "in"}</span></h1>
     <div className="vitals">
       <div className={`vital ${x.agent.autopilot === "on" ? "" : "alert"}`}><b>{x.agent.autopilot === "on" ? t("Включён") : x.agent.autopilot === "paused" ? t("Пауза") : t("Выключен")}</b><span>{t("автопилот")}</span></div>
       <div className="vital"><b>{t(level?.label ?? "")}</b><span>{t("стратегия")}{x.strategy.capped_by ? ` (${x.strategy.capped_by === "warmup" ? t("ограничено прогревом") : t("ограничено риском")})` : ""}</span></div>
@@ -263,7 +271,7 @@ function AgentHome({ x, cat, reload }: { x: any; cat: any; reload: () => void })
       <div className="vital"><b className="num">{money(x.agent.spent_usd)}</b><span>{t("из")} {money(x.agent.budget_usd_month)} {t("бюджета агента")}</span></div>
     </div>
     {!x.subscription.active && <div className="notice warn">{t("Подписка не активна: агент на паузе.")} <button className="btn small" onClick={() => go("/me/pay")}>{t("Продлить")}</button></div>}
-    {!x.linkedin.api && <div className="notice warn">{t("Профиль LinkedIn не подключён: посты не смогут выйти.")} <button className="btn small" onClick={() => run(async () => { const r = await api(`/api/accounts/${x.account.id}/oauth/start`); location.href = r.authorize_url; }, "Переходим в LinkedIn")}>{t("Подключить")}</button></div>}
+    {!x.linkedin.api && <div className="notice warn">{isX ? t("Аккаунт X не подключён: твиты не смогут выйти.") : t("Профиль LinkedIn не подключён: посты не смогут выйти.")} <button className="btn small" disabled={busy} onClick={connect}>{t("Подключить")}</button></div>}
     {x.pack > 0 && <div className="notice info">{t("Агент предлагает поддержать компанию")}: <b className="num">{x.pack}</b>. <button className="btn small primary" disabled={busy} onClick={() => run(() => api(`/api/me/agent/${x.account.id}/pack/approve`, { method: "POST" }), "Одобрено", reload)}>{t("Одобрить все")}</button> <a href="#/me/actions">{t("посмотреть")}</a></div>}
     <h2>{t("Ближайшие посты")}</h2>
     {!open.length && <p className="muted">{t("Агент готовит посты за сутки до выхода. Новые появятся здесь и в Telegram.")}</p>}

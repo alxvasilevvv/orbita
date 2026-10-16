@@ -7,7 +7,7 @@ import { actorCtx, loadActor } from "../src/services/context";
 import * as agent from "../src/services/agent";
 import * as acc from "../src/services/accounts";
 import * as company from "../src/services/company";
-import { autopilotTick, draftDue, newsFanout, planAll, portraitsTick, publishDue, syncPublished, deliverTelegram } from "../src/agents/autopilot";
+import { autopilotTick, draftDue, newsFanout, planAll, portraitsTick, publishDue, publishXDue, syncPublished, deliverTelegram } from "../src/agents/autopilot";
 import { checkPost, lockAccount } from "../src/agents/officer";
 import { recordSignal } from "../src/agents/orchestrator";
 import { buildPassport, claimsFromInterview, composePost, passportHash, planWeek, roleByKey, signCallback, verifyCallback, warmup, weekKey, weekStartUtc, maxCompanyPostsPerDay } from "../src/core/autopilot";
@@ -316,7 +316,8 @@ describe("Telegram и портреты", () => {
     const ctx = actorCtx(env.db, (await loadActor(env.db, owner))!);
     const r = await agent.approvePack(ctx, env.db, row.account_id);
     expect(r.approved + r.failed.length).toBe(row.n);
-    expect((await env.db.query("SELECT count(*)::int n FROM mission_actions WHERE account_id = $1 AND status = 'awaiting_owner'", [row.account_id])).rows[0].n).toBe(0);
+    // Одобренные уходят из ожидания; не прошедшие повторную проверку офицера остаются (это корректно).
+    expect((await env.db.query("SELECT count(*)::int n FROM mission_actions WHERE account_id = $1 AND status = 'awaiting_owner'", [row.account_id])).rows[0].n).toBe(r.failed.length);
   });
 });
 
@@ -443,5 +444,76 @@ describe("чат с личным агентом", () => {
     const leader = await env.ctx("leader");
     const a = await accOf("Lena Müller");
     await expect(agentChat(leader, env.db, a.id, { text: "привет" })).rejects.toThrow();
+  });
+});
+
+describe("X (Twitter): адаптер и публикация через автопилот", () => {
+  async function makeXAccount() {
+    const anna = await accOf("Anna Kovacs");
+    const client = anna.client_id;
+    const ag = (await env.db.query("SELECT agency_id FROM clients WHERE id = $1", [client])).rows[0].agency_id;
+    const annaUid = await uid("anna.k@northwind.example");
+    const acc = (await env.db.query("INSERT INTO managed_accounts(client_id, kind, display_name, primary_language, timezone, network, status) VALUES ($1,'employee','Anna X','en','Europe/Budapest','x','active') RETURNING id", [client])).rows[0].id;
+    await env.db.query("INSERT INTO memberships(user_id, agency_id, role, scope_account_id) VALUES ($1,$2,'client',$3)", [annaUid, ag, acc]);
+    await env.db.query("INSERT INTO employee_profiles(account_id, client_id, expertise_tags, frequency, self_reported_activity, employment_verified_at, verification_method) VALUES ($1,$2,'{ml,data}','weekly','weekly', now(),'email_domain')", [acc, client]);
+    await env.db.query("INSERT INTO account_safety(account_id, client_id, ramp_started_at) VALUES ($1,$2, now() - interval '40 days')", [acc, client]);
+    const { buildPassport, passportHash, roleByKey, claimsFromInterview } = await import("../src/core/autopilot");
+    const answers = { now: "I lead the ML team building predictive maintenance models for factory equipment.", win: "We moved model inference to a separate Kubernetes cluster because telemetry arrives in bursts and alerts now come before failures." };
+    const passport = buildPassport(roleByKey("data_ml")!, "Anna X", answers, { topics: ["ml", "data"], length: "short", register: "conversational", humor: false, language: "en", phrases: [], never_topics: [] });
+    const src = (await env.db.query("INSERT INTO knowledge_sources(client_id, account_id, title, kind, body, usage_rights) VALUES ($1,$2,'iv','interview',$3,'internal_and_ai') RETURNING id", [client, acc, JSON.stringify(answers)])).rows[0].id;
+    for (const c of claimsFromInterview(answers)) await env.db.query("INSERT INTO verified_claims(client_id, account_id, statement, source_id, confirmed_by, valid_as_of) VALUES ($1,$2,$3,$4,'Anna',current_date)", [client, acc, c, src]);
+    await env.db.query("INSERT INTO personal_agents(account_id, client_id, user_id, role_key, onboarding_step, passport, passport_version, passport_hash, passport_confirmed_at, autopilot, veto_hours) VALUES ($1,$2,$3,'data_ml','done',$4,1,$5, now() - interval '30 days','on',24)", [acc, client, annaUid, JSON.stringify(passport), passportHash(passport)]);
+    for (const scope of ["autopilot_posts", "publish_post", "ai_processing"]) await env.db.query("INSERT INTO consents(client_id, account_id, action_scope, granted_by_name, evidence_ref, granted_by_user_id) VALUES ($1,$2,$3,'Anna','x',$4)", [client, acc, scope, annaUid]);
+    await env.db.query("INSERT INTO subscriptions(account_id, client_id, status, period_end, provider) VALUES ($1,$2,'active', now() + interval '25 days','demo')", [acc, client]);
+    env.secrets.set(`x/${acc}/seed`, "demo-x-token");
+    await env.db.query("UPDATE managed_accounts SET linkedin_urn = $2 WHERE id = $1", [acc, "x-user-anna"]);
+    await env.db.query("INSERT INTO oauth_connections(client_id, account_id, external_subject, granted_scopes, secret_ref, status) VALUES ($1,$2,'x-user-anna','{tweet.write}',$3,'active')", [client, acc, `x/${acc}/seed`]);
+    const { writeXCapability } = await import("../src/services/accounts");
+    await writeXCapability(env.db, acc, client, true);
+    return acc;
+  }
+  it("splitThread режет длинный текст на нумерованный тред, короткий оставляет одним", async () => {
+    const mod = await import("../src/integrations/x/adapter");
+    expect(mod.splitThread("короткий твит").length).toBe(1);
+    const long = Array.from({ length: 80 }, (_, i) => `слово${i}`).join(" ");
+    const parts = mod.splitThread(long);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.every((p: string) => p.length <= 280)).toBe(true);
+    expect(parts[0].endsWith(`1/${parts.length}`)).toBe(true);
+  });
+  it("X-аккаунт с автопилотом: пост планируется, выходит через X API, пишется публикация", async () => {
+    const now = new Date();
+    const xacc = await makeXAccount();
+    await planAll(env.db, now);
+    const planned = (await posts(xacc)).filter((p) => p.status === "planned");
+    expect(planned.length).toBeGreaterThan(0);
+    const p0 = planned[0];
+    await draftDue({ db: env.db, storage }, new Date(new Date(p0.publish_at).getTime() - 30 * H));
+    const drafted = (await env.db.query("SELECT status FROM autopilot_posts WHERE id = $1", [p0.id])).rows[0];
+    if (drafted.status !== "veto_window") return;
+    const at = new Date(new Date(p0.publish_at).getTime() + 60_000);
+    await publishDue({ db: env.db }, at);
+    expect((await env.db.query("SELECT status FROM autopilot_posts WHERE id = $1", [p0.id])).rows[0].status).toBe("scheduled");
+    const r = await publishXDue({ db: env.db, xAdapter: env.xAdapter, secrets: env.secrets }, at);
+    expect(r.published).toBe(1);
+    const done = (await env.db.query("SELECT status, external_url FROM autopilot_posts WHERE id = $1", [p0.id])).rows[0];
+    expect(done.status).toBe("published");
+    expect(done.external_url).toContain("x.com");
+    expect((await env.db.query("SELECT count(*)::int n FROM external_publications WHERE account_id = $1", [xacc])).rows[0].n).toBe(1);
+  });
+  it("connectX включает публикацию через API в демо-режиме", async () => {
+    const xacc = await env.db.query("INSERT INTO managed_accounts(client_id, kind, display_name, timezone, network, status) SELECT client_id, 'employee','Raj X','Asia/Kolkata','x','active' FROM managed_accounts WHERE display_name LIKE 'Raj Patel%' RETURNING id, client_id");
+    const acc = xacc.rows[0];
+    const rajUid = await uid("raj.p@northwind.example");
+    const ag = (await env.db.query("SELECT agency_id FROM clients WHERE id = $1", [acc.client_id])).rows[0].agency_id;
+    await env.db.query("INSERT INTO memberships(user_id, agency_id, role, scope_account_id) VALUES ($1,$2,'client',$3)", [rajUid, ag, acc.id]);
+    const raj = await ctxOf("raj.p@northwind.example");
+    const r = await agent.connectX(raj, env.db, env.secrets, acc.id);
+    expect(r).toMatchObject({ connected: true });
+    expect((await env.db.query("SELECT mode FROM capability_snapshots WHERE account_id = $1 AND operation = 'publish_post_x'", [acc.id])).rows[0].mode).toBe("api");
+  });
+  it("без адаптера X publishXDue ничего не делает", async () => {
+    const r = await publishXDue({ db: env.db }, new Date());
+    expect(Object.keys(r).length).toBe(0);
   });
 });

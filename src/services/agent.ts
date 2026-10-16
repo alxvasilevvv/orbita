@@ -56,12 +56,13 @@ const ownedIds = (ctx: Ctx) => ctx.actor.memberships.filter((m) => m.role === "c
 export async function myAgent(ctx: Ctx, systemDb: Db, now = new Date()) {
   const out = [];
   for (const id of ownedIds(ctx)) {
-    const a = (await ctx.db.query("SELECT a.id, a.client_id, a.display_name, a.kind, a.timezone, a.status, c.name AS company FROM managed_accounts a JOIN clients c ON c.id = a.client_id WHERE a.id = $1", [id])).rows[0];
+    const a = (await ctx.db.query("SELECT a.id, a.client_id, a.display_name, a.kind, a.timezone, a.status, a.network, c.name AS company FROM managed_accounts a JOIN clients c ON c.id = a.client_id WHERE a.id = $1", [id])).rows[0];
     if (!a || a.kind === "company_page") continue;
     const g = await ensureAgent(ctx.db, a, ctx.actor.id);
     const brief = await approvedBrief(systemDb, a.client_id);
     const conn = (await ctx.db.query("SELECT status, expires_at FROM oauth_connections WHERE account_id = $1 AND status IN ('active','expiring') ORDER BY updated_at DESC LIMIT 1", [id])).rows[0] ?? null;
-    const cap = (await ctx.db.query("SELECT mode, unavailable_reason FROM capability_snapshots WHERE account_id = $1 AND operation = 'publish_post_member' ORDER BY checked_at DESC LIMIT 1", [id])).rows[0] ?? null;
+    const pubOp = a.network === "x" ? "publish_post_x" : "publish_post_member";
+    const cap = (await ctx.db.query("SELECT mode, unavailable_reason FROM capability_snapshots WHERE account_id = $1 AND operation = $2 ORDER BY checked_at DESC LIMIT 1", [id, pubOp])).rows[0] ?? null;
     const ramp = (await ctx.db.query("SELECT ramp_started_at FROM account_safety WHERE account_id = $1", [id])).rows[0]?.ramp_started_at ?? g.created_at;
     const posts = (await ctx.db.query(`SELECT p.id, p.kind, p.status, p.topic_tag, p.publish_at, p.body, p.media_id, p.veto_codes, p.warnings, p.review_required, p.reviewed_at, p.review_comment, p.owner_action, p.external_url, p.source_url
         FROM autopilot_posts p WHERE p.account_id = $1 AND (p.status = ANY($2::text[]) OR p.publish_at > $3::timestamptz - interval '30 days') ORDER BY p.publish_at DESC LIMIT 40`, [id, AUTOPILOT_OPEN, now.toISOString()])).rows;
@@ -77,7 +78,7 @@ export async function myAgent(ctx: Ctx, systemDb: Db, now = new Date()) {
       strategy: { company, employee: g.strategy, effective: safety.level ?? company, capped_by: safety.levelCappedBy },
       subscription: sub,
       account: a, agent: { ...g, telegram_link_hash: undefined, spent_usd: g.spent_month === monthKey(now) ? Number(g.spent_usd) : 0, budget_usd_month: Number(g.budget_usd_month), telegram_linked: !!g.telegram_chat_id, telegram_chat_id: undefined },
-      linkedin: { connected: !!conn, api: cap?.mode === "api", reason: cap?.unavailable_reason ?? null },
+      network: a.network, linkedin: { connected: !!conn, api: cap?.mode === "api", reason: cap?.unavailable_reason ?? null },
       warmup: w, review_by_company: reviewRequired(brief), brief_topics: (brief?.topics ?? []).map((t: any) => t.tag),
       posts: posts.map((p: any) => ({ ...p, veto_ru: p.veto_codes.map((c: string) => VETO_RU[c] ?? c) })), portrait, consents: consents.map((c: any) => c.action_scope), pack,
     });
@@ -555,6 +556,32 @@ export async function setAgentBudget(ctx: Ctx, accountId: string, input: unknown
   await ctx.db.query("UPDATE personal_agents SET budget_usd_month = $2, updated_at = now() WHERE account_id = $1", [accountId, d.budget_usd_month]);
   await audit(ctx.db, ctx, { action: "agent.budget_set", entity_type: "personal_agent", entity_id: accountId, client_id: a.client_id, account_id: accountId, details: d });
   return { ok: true };
+}
+
+/** Подключение X (Twitter). В production возвращает ссылку авторизации X OAuth2; в демо сразу привязывает тестовый токен. */
+export async function connectX(ctx: Ctx, systemDb: Db, secrets: { set(ref: string, v: string): unknown | Promise<unknown> }, accountId: string) {
+  const a = await owned(ctx, accountId);
+  const net = (await systemDb.query("SELECT network FROM managed_accounts WHERE id = $1", [accountId])).rows[0]?.network;
+  if (net !== "x") throw new ValidationError("Этот аккаунт не в сети X");
+  const { writeXCapability } = await import("./accounts");
+  const cid = process.env.X_CLIENT_ID, redirect = process.env.X_REDIRECT_URI;
+  if (cid && redirect) {
+    const state = randomBytes(16).toString("hex");
+    const url = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${encodeURIComponent(cid)}&redirect_uri=${encodeURIComponent(redirect)}&scope=${encodeURIComponent("tweet.read tweet.write users.read offline.access")}&state=${state}&code_challenge=challenge&code_challenge_method=plain`;
+    return { authorize_url: url };
+  }
+  // Демо: привязываем тестовый токен и включаем публикацию через API.
+  const ref = `x/${accountId}/${Date.now()}`;
+  await secrets.set(ref, `demo-x-token-${accountId}`);
+  await systemDb.tx(async (q) => {
+    await q.query("UPDATE managed_accounts SET linkedin_urn = $2 WHERE id = $1", [accountId, `x-user-${accountId.slice(0, 8)}`]);
+    await q.query("UPDATE oauth_connections SET status = 'revoked', updated_at = now() WHERE account_id = $1 AND status IN ('active','expiring')", [accountId]);
+    await q.query("INSERT INTO oauth_connections(client_id, account_id, external_subject, granted_scopes, secret_ref, status, connected_by) VALUES ($1,$2,$3,'{tweet.write,users.read}',$4,'active',$5)",
+      [a.client_id, accountId, `x-user-${accountId.slice(0, 8)}`, ref, ctx.actor.id]);
+    await writeXCapability(q, accountId, a.client_id, true);
+    await audit(q, ctx, { action: "connection.created", entity_type: "oauth_connection", client_id: a.client_id, account_id: accountId, details: { network: "x" } });
+  });
+  return { connected: true };
 }
 
 export { tgEnqueue };

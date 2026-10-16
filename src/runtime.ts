@@ -7,6 +7,7 @@ import { aiProviderFromEnv, agentProviderFromEnv } from "./ai/providers";
 import { imageProviderFromEnv, type ImageProvider } from "./integrations/images";
 import { telegramFromEnv, type TelegramClient } from "./integrations/telegram";
 import { autopilotTick } from "./agents/autopilot";
+import { xAdapterFromEnv, type XSocialAdapter } from "./integrations/x/adapter";
 import { billingTick, paymentsFromEnv, type PaymentProvider } from "./services/billing";
 import { draftOutreach } from "./services/outreach";
 import type { AiProvider } from "./ai/guard";
@@ -31,6 +32,7 @@ export interface Runtime {
   images: ImageProvider;
   telegram: TelegramClient;
   payments: PaymentProvider;
+  xAdapter: XSocialAdapter;
 }
 
 export function createRuntime(db: Db, env = process.env): Runtime {
@@ -46,6 +48,7 @@ export function createRuntime(db: Db, env = process.env): Runtime {
     images: imageProviderFromEnv(env),
     telegram: telegramFromEnv(env),
     payments: paymentsFromEnv(env),
+    xAdapter: xAdapterFromEnv(env),
   };
 }
 
@@ -60,7 +63,8 @@ export function workerContext(rt: Runtime, workerId: string, env = process.env):
       (now) => b2bTick({ db: rt.db, adapter: rt.adapter, secrets: rt.secrets, ai: rt.ai, apiVersion: env.LINKEDIN_API_VERSION }, now),
       // Автопилот сотрудников: план недели, новости компании, черновики, окно отмены, публикация, портреты, Telegram.
       (now) => autopilotTick({ db: rt.db, ai: rt.ai, agentAi: rt.agentAi, images: rt.images, telegram: rt.telegram, storage: rt.storage,
-        appUrl: env.APP_URL, callbackSecret: env.TELEGRAM_CALLBACK_SECRET, disabled: env.AUTOPILOT_DISABLED === "1" }, now),
+        appUrl: env.APP_URL, callbackSecret: env.TELEGRAM_CALLBACK_SECRET, disabled: env.AUTOPILOT_DISABLED === "1",
+        xAdapter: rt.xAdapter, secrets: rt.secrets }, now),
       (now) => billingTick(rt.db, now),
       (now) => draftOutreach(rt.db, now),
     ],

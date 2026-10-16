@@ -8,6 +8,9 @@ import { STRATEGIES, type StrategyLevel } from "../core/strategy";
 import { startRun, finishRun, approvedBrief } from "./orchestrator";
 import { DemoAiProvider, detectInjection, wrapUntrusted, type AiProvider } from "../ai/guard";
 import { DemoImageProvider, type ImageProvider } from "../integrations/images";
+import { IntegrationError } from "../integrations/linkedin/adapter";
+import { splitThread, type XSocialAdapter } from "../integrations/x/adapter";
+import type { SecretStore } from "../services/publishing";
 import type { TelegramClient, TgButton } from "../integrations/telegram";
 import { notify } from "../services/notify";
 import { audit } from "../services/context";
@@ -23,7 +26,11 @@ import { sniff, imageSize } from "../services/media";
 export interface AutopilotDeps {
   db: Db; ai?: AiProvider; agentAi?: AiProvider; images?: ImageProvider; telegram?: TelegramClient; storage?: Storage;
   appUrl?: string; callbackSecret?: string; disabled?: boolean;
+  /** Адаптер X для публикации твитов; секреты берутся из того же хранилища, что у LinkedIn. */
+  xAdapter?: XSocialAdapter; secrets?: SecretStore;
 }
+/** Операция возможностей по сети. */
+export const PUBLISH_OP: Record<string, string> = { linkedin: "publish_post_member", x: "publish_post_x" };
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const SYSTEM = (agencyId: string) => ({ actor: { id: null, agency_id: agencyId } });
@@ -39,7 +46,7 @@ export function monthKey(d: Date) { return d.toISOString().slice(0, 7); }
 /* ---------- Контекст агента ---------- */
 export async function agentContext(q: Queryable, accountId: string) {
   const row = (await q.query(`
-    SELECT g.*, a.display_name, a.timezone, a.client_id, a.status AS account_status, c.agency_id, c.name AS company,
+    SELECT g.*, a.display_name, a.timezone, a.client_id, a.status AS account_status, a.network, a.linkedin_urn, c.agency_id, c.name AS company,
            coalesce(s.ramp_started_at, g.created_at) AS warmup_start
       FROM personal_agents g JOIN managed_accounts a ON a.id = g.account_id JOIN clients c ON c.id = a.client_id
       LEFT JOIN account_safety s ON s.account_id = a.id WHERE g.account_id = $1`, [accountId])).rows[0];
@@ -371,6 +378,58 @@ export async function publishDue(deps: AutopilotDeps, now = new Date()) {
   return out;
 }
 
+/** Публикация X: запланированные посты X-аккаунтов уходят в X API вне транзакции (тред по цепочке). */
+export async function publishXDue(deps: AutopilotDeps, now = new Date()) {
+  const db = deps.db;
+  const adapter = deps.xAdapter;
+  const out: Record<string, number> = {};
+  if (!adapter || !deps.secrets) return out;
+  const due = (await db.query(`SELECT p.id FROM autopilot_posts p JOIN managed_accounts a ON a.id = p.account_id
+      WHERE p.status = 'scheduled' AND a.network = 'x' ORDER BY p.publish_at LIMIT 20`)).rows;
+  for (const { id } of due) {
+    // Атомарный захват, чтобы два прохода не опубликовали дважды.
+    const claimed = (await db.query("UPDATE autopilot_posts SET status = 'publishing_x', updated_at = now() WHERE id = $1 AND status = 'scheduled' RETURNING *", [id])).rows[0];
+    if (!claimed) continue;
+    const ctx = (await db.query(`SELECT a.linkedin_urn AS author_id, c.agency_id, g.user_id,
+        (SELECT secret_ref FROM oauth_connections o WHERE o.account_id = a.id AND o.status IN ('active','expiring') ORDER BY updated_at DESC LIMIT 1) AS secret_ref
+        FROM managed_accounts a JOIN clients c ON c.id = a.client_id JOIN personal_agents g ON g.account_id = a.id WHERE a.id = $1`, [claimed.account_id])).rows[0];
+    try {
+      const token = ctx?.secret_ref ? (await deps.secrets.get(ctx.secret_ref)) : null;
+      if (!token || !ctx?.author_id) throw new IntegrationError("permanent", "no_api", "Нет подключения X");
+      const parts = splitThread(claimed.body ?? "");
+      let replyTo: string | null = null, firstId = "", firstUrl: string | null = null;
+      for (const [i, text] of parts.entries()) {
+        const res = await adapter.publishTweet({ authorId: ctx.author_id, accessToken: token, idempotencyKey: `ap:${id}:${i}`, text, replyToId: replyTo });
+        replyTo = res.externalId;
+        if (i === 0) { firstId = res.externalId; firstUrl = res.url; }
+      }
+      await db.tx(async (q) => {
+        if (claimed.content_item_id) {
+          await q.query("UPDATE content_items SET state = 'published', updated_at = now(), row_version = row_version + 1 WHERE id = $1 AND state NOT IN ('published','archived')", [claimed.content_item_id]);
+          await q.query("INSERT INTO external_publications(client_id, account_id, content_item_id, external_id, url, evidence_type, published_at) VALUES ($1,$2,$3,$4,$5,'api_confirmed', now()) ON CONFLICT DO NOTHING",
+            [claimed.client_id, claimed.account_id, claimed.content_item_id, firstId, firstUrl]);
+        }
+        await q.query("UPDATE autopilot_posts SET status = 'published', external_url = $2, updated_at = now() WHERE id = $1", [id, firstUrl]);
+      });
+      await notify(db, { agency_id: ctx.agency_id, client_id: claimed.client_id, user_ids: [ctx.user_id], kind: "autopilot.published", title: "Ваш агент опубликовал твит. Если что-то не так, его можно удалить в X", link: firstUrl ?? "#/me/agent", dedupe: `published:${id}` });
+      out.published = (out.published ?? 0) + 1;
+    } catch (e) {
+      const err = e instanceof IntegrationError ? e : new IntegrationError("unknown_outcome", "unexpected", String((e as any)?.message ?? e));
+      if (err.kind === "unknown_outcome") {
+        // Исход неизвестен: не повторяем вслепую, возвращаем в scheduled для ручной проверки на следующем проходе редко.
+        await db.query("UPDATE autopilot_posts SET status = 'scheduled', veto_codes = array_append(veto_codes, 'x_unknown'), updated_at = now() WHERE id = $1", [id]);
+        out.unknown = (out.unknown ?? 0) + 1;
+      } else {
+        await db.query("UPDATE autopilot_posts SET status = 'failed', veto_codes = array_append(veto_codes, $2), updated_at = now() WHERE id = $1", [id, err.code]);
+        if (claimed.content_item_id) await db.query("UPDATE content_items SET state = 'failed', updated_at = now(), row_version = row_version + 1 WHERE id = $1 AND state = 'scheduled'", [claimed.content_item_id]);
+        await notify(db, { agency_id: ctx?.agency_id ?? claimed.client_id, client_id: claimed.client_id, user_ids: await managersOf(db, claimed.client_id), kind: "autopilot.failed", title: "Твит автопилота не опубликован: нужен разбор", link: `#/accounts/${claimed.account_id}`, dedupe: `failed:${id}` });
+        out[`error:${err.code}`] = (out[`error:${err.code}`] ?? 0) + 1;
+      }
+    }
+  }
+  return out;
+}
+
 async function publishOne(deps: AutopilotDeps, id: string, now: Date): Promise<string> {
   const db = deps.db;
   const res = await db.tx(async (q) => {
@@ -401,7 +460,8 @@ async function publishOne(deps: AutopilotDeps, id: string, now: Date): Promise<s
       const c = (await q.query("SELECT revoked_at FROM consents WHERE id = $1", [post.consent_id])).rows[0];
       if (!c || c.revoked_at) veto.push("no_consent_autopilot_posts");
     }
-    const cap = (await q.query("SELECT mode FROM capability_snapshots WHERE account_id = $1 AND operation = 'publish_post_member' ORDER BY checked_at DESC LIMIT 1", [post.account_id])).rows[0];
+    const network = (ctx?.network ?? "linkedin") as string;
+    const cap = (await q.query("SELECT mode FROM capability_snapshots WHERE account_id = $1 AND operation = $2 ORDER BY checked_at DESC LIMIT 1", [post.account_id, PUBLISH_OP[network] ?? "publish_post_member"])).rows[0];
     const conn = (await q.query("SELECT 1 FROM oauth_connections WHERE account_id = $1 AND status IN ('active','expiring')", [post.account_id])).rows[0];
     if (cap?.mode !== "api" || !conn) veto.push("no_api");
     if (veto.length) {
@@ -413,7 +473,12 @@ async function publishOne(deps: AutopilotDeps, id: string, now: Date): Promise<s
     await q.query("UPDATE content_items SET state = 'scheduled', approved_version_id = current_version_id, scheduled_at = $2, scheduled_tz = $3, updated_at = now(), row_version = row_version + 1 WHERE id = $1",
       [it.id, now.toISOString(), ctx?.timezone ?? "UTC"]);
     await audit(q, SYSTEM(ctx!.agency_id), { action: "content.autopilot_approved", entity_type: "content_item", entity_id: it.id, client_id: post.client_id, account_id: post.account_id,
-      details: { autopilot_post_id: id, consent_id: post.consent_id, owner_action: post.owner_action, reviewed_by: post.reviewed_by, veto_hours: ctx?.veto_hours } });
+      details: { autopilot_post_id: id, network, consent_id: post.consent_id, owner_action: post.owner_action, reviewed_by: post.reviewed_by, veto_hours: ctx?.veto_hours } });
+    if (network === "x") {
+      // X: публикует отдельный шаг publishXDue (внешний вызов вне транзакции), без очереди LinkedIn.
+      await q.query("UPDATE autopilot_posts SET status = 'scheduled', updated_at = now() WHERE id = $1", [id]);
+      return { r: "scheduled" as const };
+    }
     await q.query(`INSERT INTO publication_jobs(client_id, account_id, content_item_id, content_version_id, idempotency_key, mode, status, run_at)
         VALUES ($1,$2,$3,$4,$5,'api','queued',$6) ON CONFLICT (idempotency_key) DO UPDATE SET status = 'queued', run_at = EXCLUDED.run_at, attempts = 0, last_error_code = NULL, last_error = NULL, updated_at = now()
         WHERE publication_jobs.status IN ('cancelled','failed','dead')`,
@@ -525,17 +590,18 @@ export async function portraitsTick(deps: AutopilotDeps, now = new Date()) {
 export async function autopilotTick(deps: AutopilotDeps, now = new Date()) {
   const expired = await expireStale(deps.db, now);
   const synced = await syncPublished(deps, now);
-  let planned = { created: 0 }, news = { created: 0 }, drafted = {}, published = {};
+  let planned = { created: 0 }, news = { created: 0 }, drafted = {}, published = {}, publishedX = {};
   if (!deps.disabled) {
     planned = await planAll(deps.db, now);
     news = await newsFanout(deps.db, now);
     drafted = await draftDue(deps, now);
     published = await publishDue(deps, now);
+    publishedX = await publishXDue(deps, now);
   }
   const portraits = await portraitsTick(deps, now);
   const packs = await packNotify(deps, now);
   const telegram = await deliverTelegram(deps);
-  return { expired, synced, planned, news, drafted, published, portraits, packs, telegram };
+  return { expired, synced, planned, news, drafted, published, publishedX, portraits, packs, telegram };
 }
 
 export { OPEN as AUTOPILOT_OPEN };

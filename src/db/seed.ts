@@ -20,7 +20,7 @@ export async function ensureReferenceData(db: Db) {
 }
 
 /** Демо-данные. Не содержат метрик LinkedIn: показатели появляются только из ручного ввода с источником. */
-export async function seedDemo(db: Db) {
+export async function seedDemo(db: Db, opts: { x?: boolean } = {}) {
   await ensureReferenceData(db);
   const exists = (await db.query("SELECT id FROM agencies LIMIT 1")).rows[0];
   if (exists) return { agency_id: exists.id, seeded: false };
@@ -130,6 +130,7 @@ export async function seedDemo(db: Db) {
   await db.query("UPDATE content_items SET state = 'published' WHERE id = $1", [pageItem]);
   await db.query("INSERT INTO external_publications(client_id, account_id, content_item_id, external_id, url, evidence_type, published_at) VALUES ($1,$2,$3,'urn:li:activity:7300000000000000042','https://www.linkedin.com/feed/update/urn:li:activity:7300000000000000042/','manual_mark', now() - interval '3 hours')", [c1, a2, pageItem]);
   await seedAutopilot(db, c1, empAcc);
+  if (opts.x) await seedXAccount(db, c1, empAcc.anna);
   await db.query("INSERT INTO metric_snapshots(client_id, account_id, metric_key, value, observed_at, source, availability_status) VALUES ($1,$2,'followers',1840, now() - interval '31 days','manual_entry','available'),($1,$2,'followers',2115, now() - interval '1 day','manual_entry','available')", [c1, a2]);
   return { agency_id: ag, seeded: true, users: u };
 }
@@ -209,4 +210,33 @@ async function seedDeps() {
   const a = await import("../core/autopilot");
   const { AUTOPILOT_TERMS } = await import("../services/agent");
   return { ...a, AUTOPILOT_TERMS_TEXT: AUTOPILOT_TERMS };
+}
+
+/** Демо X-аккаунт: тот же сотрудник (Anna) ведёт ещё и X, автопилот публикует твиты через официальный API. */
+async function seedXAccount(db: Db, clientId: string, anna: { acc: string; uid: string; name: string; tz: string }) {
+  const { buildPassport, passportHash, roleByKey, claimsFromInterview } = await import("../core/autopilot");
+  const { DbSecretStore } = await import("../services/secrets");
+  const { writeXCapability, writeCapabilities } = await import("../services/accounts");
+  const secrets = new DbSecretStore(db);
+  const ag = (await db.query("SELECT agency_id FROM clients WHERE id = $1", [clientId])).rows[0].agency_id;
+  const acc = (await db.query("INSERT INTO managed_accounts(client_id, kind, display_name, primary_language, timezone, network, status) VALUES ($1,'employee',$2,'en',$3,'x','active') RETURNING id", [clientId, "Anna Kovacs (X)", anna.tz])).rows[0].id;
+  await db.query("INSERT INTO memberships(user_id, agency_id, role, scope_account_id) VALUES ($1,$2,'client',$3)", [anna.uid, ag, acc]);
+  await db.query("INSERT INTO employee_profiles(account_id, client_id, expertise_tags, frequency, self_reported_activity, employment_verified_at, verification_method) VALUES ($1,$2,'{ml,data}','weekly','weekly', now(), 'email_domain')", [acc, clientId]);
+  await db.query("INSERT INTO account_safety(account_id, client_id, ramp_started_at) VALUES ($1,$2, now() - interval '40 days')", [acc, clientId]);
+  await writeCapabilities(db, acc, clientId, "employee", "none", [], "seed");
+  const answers = { now: "I lead the ML team building predictive maintenance models for factory equipment.", win: "We moved model inference to a separate Kubernetes cluster because telemetry arrives in bursts, and alerts now come before failures." };
+  const role = roleByKey("data_ml")!;
+  const passport = buildPassport(role, "Anna Kovacs", answers, { topics: ["ml", "data"], length: "short", register: "conversational", humor: false, language: "en", phrases: [], never_topics: ["salary"] });
+  const hash = passportHash(passport);
+  const src = (await db.query("INSERT INTO knowledge_sources(client_id, account_id, title, kind, body, usage_rights, created_by) VALUES ($1,$2,'Интервью X','interview',$3,'internal_and_ai',$4) RETURNING id", [clientId, acc, JSON.stringify(answers), anna.uid])).rows[0].id;
+  for (const c of claimsFromInterview(answers)) await db.query("INSERT INTO verified_claims(client_id, account_id, statement, source_id, confirmed_by, valid_as_of) VALUES ($1,$2,$3,$4,'Anna Kovacs',current_date)", [clientId, acc, c, src]);
+  await db.query(`INSERT INTO personal_agents(account_id, client_id, user_id, role_key, onboarding_step, interview, interview_source_id, passport, passport_version, passport_hash, passport_confirmed_at, autopilot, veto_hours)
+      VALUES ($1,$2,$3,'data_ml','done',$4,$5,$6,1,$7, now() - interval '30 days','on',24)`, [acc, clientId, anna.uid, JSON.stringify(answers), src, JSON.stringify(passport), hash]);
+  for (const scope of ["autopilot_posts", "publish_post", "ai_processing"]) await db.query("INSERT INTO consents(client_id, account_id, action_scope, granted_by_name, evidence_ref, granted_by_user_id) VALUES ($1,$2,$3,'Anna Kovacs','Автопилот X (демо)',$4)", [clientId, acc, scope, anna.uid]);
+  await db.query("INSERT INTO subscriptions(account_id, client_id, status, period_end, provider) VALUES ($1,$2,'active', now() + interval '25 days','demo')", [acc, clientId]);
+  const ref = `x/${acc}/seed`;
+  await secrets.set(ref, "demo-x-token");
+  await db.query("UPDATE managed_accounts SET linkedin_urn = $2 WHERE id = $1", [acc, `x-user-${acc.slice(0, 8)}`]);
+  await db.query("INSERT INTO oauth_connections(client_id, account_id, external_subject, granted_scopes, secret_ref, status) VALUES ($1,$2,$3,'{tweet.write,users.read}',$4,'active')", [clientId, acc, `x-user-${acc.slice(0, 8)}`, ref]);
+  await writeXCapability(db, acc, clientId, true);
 }

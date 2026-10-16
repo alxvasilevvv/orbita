@@ -4,6 +4,7 @@ import { seedDemo } from "../src/db/seed";
 import { actorCtx, loadActor, type Ctx } from "../src/services/context";
 import { MemorySecretStore } from "../src/services/publishing";
 import { DemoLinkedInAdapter } from "../src/integrations/linkedin/adapter";
+import { DemoXAdapter } from "../src/integrations/x/adapter";
 
 /** По умолчанию PGlite; с TEST_PG_ADMIN_URL каждый тест получает отдельную базу настоящего PostgreSQL. */
 async function freshDb(): Promise<Db> {
@@ -33,7 +34,8 @@ export async function setup() {
   const acct = async (name: string) => (await db.query("SELECT id, client_id FROM managed_accounts WHERE display_name = $1", [name])).rows[0] as { id: string; client_id: string };
   const secrets = new MemorySecretStore();
   const adapter = new DemoLinkedInAdapter();
-  return { db, u, ctx, acct, secrets, adapter };
+  const xAdapter = new DemoXAdapter();
+  return { db, u, ctx, acct, secrets, adapter, xAdapter };
 }
 
 export const APPROVED = "Share on LinkedIn,Sign In with LinkedIn using OpenID Connect";

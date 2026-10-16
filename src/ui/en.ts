@@ -1,5 +1,7 @@
 /** Английский словарь интерфейса. Ключ: русская строка. Проверка полноты: npx tsx scripts/i18n-check.ts */
 export const EN: Record<string, string> = {
+  "Аккаунт X не подключён: твиты не смогут выйти.": "Your X account is not connected: tweets cannot go out.",
+  "Подключаем X": "Connecting X",
   "агенты ведут LinkedIn вашей команды": "agents run your team's LinkedIn",
   "Напишите: «сделай контент-план», «пост про безопасность», «давай активнее», «добавь тему про данные». Можно приложить файл с вашими фактами.": "Try: «make a content plan», «a post about security», «be more active», «add a topic on data». You can attach a file with your facts.",
   "Неделя": "Week",
