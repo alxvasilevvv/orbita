@@ -110,7 +110,7 @@ export async function uploadMedia(ctx: Ctx, deps: { storage: Storage; scanner: M
 export async function listMedia(ctx: Ctx, accountId: string) {
   const a = await accountScope(ctx.db, ctx, accountId);
   requireOp(ctx, "view", { clientId: a.client_id, accountId });
-  return (await ctx.db.query("SELECT id, mime_type, bytes, scan_status, original_name, width, height, external_urn, created_at FROM media_assets WHERE account_id = $1 AND scan_status = 'clean' ORDER BY created_at DESC LIMIT 200", [accountId])).rows;
+  return (await ctx.db.query("SELECT id, mime_type, bytes, scan_status, original_name, width, height, external_urn, created_at, purpose, ai_generated FROM media_assets WHERE account_id = $1 AND scan_status = 'clean' AND purpose <> 'portrait_source' ORDER BY created_at DESC LIMIT 200", [accountId])).rows;
 }
 
 export async function mediaUrl(ctx: Ctx, storage: Storage, mediaId: string) {
@@ -124,11 +124,12 @@ export async function mediaUrl(ctx: Ctx, storage: Storage, mediaId: string) {
 /** Проверка медиа версии перед согласованием и публикацией. */
 export async function mediaIssues(q: Queryable, accountId: string, mediaIds: string[], mode: "any" | "api"): Promise<string[]> {
   if (!mediaIds?.length) return [];
-  const rows = (await q.query("SELECT id, account_id, mime_type, scan_status FROM media_assets WHERE id = ANY($1::uuid[])", [mediaIds])).rows;
+  const rows = (await q.query("SELECT id, account_id, mime_type, scan_status, purpose FROM media_assets WHERE id = ANY($1::uuid[])", [mediaIds])).rows;
   const issues: string[] = [];
   if (rows.length !== mediaIds.length) issues.push("Часть вложений не найдена");
   if (rows.some((r: any) => r.account_id !== accountId)) issues.push("Вложение принадлежит другому аккаунту");
   if (rows.some((r: any) => r.scan_status !== "clean")) issues.push("Вложение не прошло проверку");
+  if (rows.some((r: any) => r.purpose === "portrait_source")) issues.push("Исходные фото для портрета нельзя прикреплять к постам");
   if (mode === "api") {
     if (rows.some((r: any) => !r.mime_type.startsWith("image/"))) issues.push("Видео и документы через API пока не публикуются: нужна публикация через человека");
     if (rows.length > MAX_IMAGES_PER_POST) issues.push(`Больше ${MAX_IMAGES_PER_POST} изображений в одном посте`);

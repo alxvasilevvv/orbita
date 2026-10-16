@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { ZodError, z } from "zod";
 import type { Db } from "../db/db";
-import { accountScope, actorCtx, isInternal, loadActor, requireOp, type Ctx } from "../services/context";
+import { accountScope, actorCtx, isAccountOwner, isInternal, loadActor, requireOp, type Ctx } from "../services/context";
 import * as acc from "../services/accounts";
 import * as content from "../services/content";
 import * as pub from "../services/publishing";
@@ -25,6 +25,11 @@ import * as life from "../services/lifecycle";
 import * as portal from "../services/portal";
 import * as company from "../services/company";
 import * as missions from "../services/missions";
+import * as agent from "../services/agent";
+import * as billing from "../services/billing";
+import * as outreach from "../services/outreach";
+import * as chat from "../services/chat";
+import type { TelegramClient } from "../integrations/telegram";
 import { CAPABILITY_CATALOG } from "../core/capabilities";
 import { STRATEGY_TEMPLATES } from "../core/templates";
 import { dailyRequestBudget } from "../core/heuristics";
@@ -47,6 +52,14 @@ const CLIENT_ROUTES = new Set([
 const EMPLOYEE_ROUTES = new Set([
   "GET /api/me/participation", "PATCH /api/me/participation/:accountId", "GET /api/me/actions",
   "POST /api/mission-actions/:id/decision", "POST /api/mission-actions/:id/done", "POST /api/accounts/:id/signals",
+  "GET /api/me/agent", "POST /api/me/agent/:accountId/role", "POST /api/me/agent/:accountId/interview", "POST /api/me/agent/:accountId/samples",
+  "POST /api/me/agent/:accountId/passport/confirm", "POST /api/me/agent/:accountId/autopilot", "POST /api/autopilot-posts/:id/action",
+  "POST /api/me/agent/:accountId/pack/approve", "POST /api/me/agent/:accountId/telegram/link", "POST /api/me/agent/:accountId/telegram/unlink",
+  "POST /api/me/agent/:accountId/likeness", "POST /api/me/agent/:accountId/likeness/revoke", "POST /api/me/agent/:accountId/photos",
+  "POST /api/me/agent/:accountId/portraits", "POST /api/portrait-jobs/:id/choose", "GET /api/accounts/:id/oauth/start",
+  "POST /api/me/agent/:accountId/strategy", "POST /api/me/agent/:accountId/promo", "POST /api/billing/checkout", "POST /api/billing/demo/:id/confirm",
+  "GET /api/me/outreach/:accountId", "POST /api/me/outreach/:accountId/import", "POST /api/outreach/:id/mark",
+  "GET /api/me/agent/:accountId/chat", "POST /api/me/agent/:accountId/chat", "GET /api/me/agent/:accountId/plan",
 ]);
 const CLIENT_ADMIN_ROUTES = new Set([
   "GET /api/me", "PATCH /api/me", "GET /api/meta", "GET /api/notifications", "POST /api/notifications/read",
@@ -54,6 +67,8 @@ const CLIENT_ADMIN_ROUTES = new Set([
   "GET /api/companies/:id/invites", "POST /api/companies/:id/invites", "POST /api/invites/:id/revoke", "POST /api/accounts/:id/confirm-employment",
   "GET /api/companies/:id/missions", "POST /api/companies/:id/missions", "GET /api/missions/:id", "POST /api/missions/:id/cancel",
   "GET /api/content/:id", "POST /api/content/:id/decision", "GET /api/reports/:id", "GET /api/media/:id/url",
+  "GET /api/companies/:id/autopilot", "POST /api/companies/:id/autopilot/review",
+  "POST /api/companies/:id/strategy", "GET /api/companies/:id/billing", "POST /api/billing/checkout", "POST /api/billing/demo/:id/confirm",
 ]);
 const AUDITOR_ROUTES = new Set(["GET /api/me", "PATCH /api/me", "GET /api/meta", "GET /api/audit", "GET /api/notifications", "POST /api/notifications/read"]);
 function externalRouteAllowed(ctx: Ctx, method: string, url: string) {
@@ -70,6 +85,10 @@ export interface AppDeps {
   scanner?: MalwareScanner;
   ai?: AiProvider;
   mailer?: import("../services/notify").Mailer;
+  /** Модель личных агентов (по умолчанию Opus) и Telegram-бот сотрудников. */
+  agentAi?: AiProvider;
+  telegram?: TelegramClient;
+  payments?: billing.PaymentProvider;
 }
 
 /** Простой лимитер запросов на пользователя/IP: защита от случайных циклов в клиентах. Основная защита: WAF. */
@@ -172,7 +191,9 @@ export function buildApp(deps: AppDeps) {
     const u = (await deps.db.query("SELECT locale FROM users WHERE id = $1", [ctx.actor.id])).rows[0];
     const internal = isInternal(ctx);
     const roles = new Set(ctx.actor.memberships.map((m) => m.role));
-    return { id: ctx.actor.id, display_name: ctx.actor.display_name, agency_id: ctx.actor.agency_id, roles: [...roles], agency_wide: agencyWide(ctx.actor.memberships), internal, client_only: !internal && roles.has("client") && !roles.has("client_admin"), company_admin: !internal && roles.has("client_admin"), employee: roles.has("client"), company_ids: ctx.actor.memberships.filter((m) => m.role === "client_admin" && !m.revoked_at).map((m) => m.scope_client_id), auditor_only: !internal && !roles.has("client") && !roles.has("client_admin") && roles.has("auditor"), locale: u?.locale ?? "ru", agency_ops: [...allowedOperations(ctx.actor.memberships, {})] };
+    const own = ctx.actor.memberships.filter((m) => m.role === "client" && m.scope_account_id && !m.revoked_at).map((m) => m.scope_account_id);
+    const personal = own.length ? (await deps.db.query("SELECT 1 FROM managed_accounts WHERE id = ANY($1::uuid[]) AND kind = 'employee' LIMIT 1", [own])).rows.length > 0 : false;
+    return { personal_agent: personal, id: ctx.actor.id, display_name: ctx.actor.display_name, agency_id: ctx.actor.agency_id, roles: [...roles], agency_wide: agencyWide(ctx.actor.memberships), internal, client_only: !internal && roles.has("client") && !roles.has("client_admin"), company_admin: !internal && roles.has("client_admin"), employee: roles.has("client"), company_ids: ctx.actor.memberships.filter((m) => m.role === "client_admin" && !m.revoked_at).map((m) => m.scope_client_id), auditor_only: !internal && !roles.has("client") && !roles.has("client_admin") && roles.has("auditor"), locale: u?.locale ?? "ru", agency_ops: [...allowedOperations(ctx.actor.memberships, {})] };
   }));
   app.patch("/api/me", h(async (ctx, req) => {
     const d = z.object({ locale: z.enum(["ru", "en"]) }).parse(req.body);
@@ -343,6 +364,59 @@ export function buildApp(deps: AppDeps) {
   app.get("/api/me/actions", h(async (ctx) => missions.myActions(ctx)));
   app.post("/api/mission-actions/:id/decision", h<{ id: string }>(async (ctx, req) => missions.decideAction(ctx, deps.db, req.params.id, req.body)));
   app.post("/api/mission-actions/:id/done", h<{ id: string }>(async (ctx, req) => missions.markActionDone(ctx, req.params.id, req.body, deps.db)));
+  // Личный агент сотрудника и автопилот.
+  const agentAi = deps.agentAi ?? aiProvider;
+  const fileName = (req: FastifyRequest) => decodeURIComponent(String(req.headers["x-filename"] ?? "photo")).slice(0, 200);
+  app.get("/api/me/agent", h(async (ctx) => agent.myAgent(ctx, deps.db)));
+  app.post("/api/me/agent/:accountId/role", h<{ accountId: string }>(async (ctx, req) => agent.setRole(ctx, req.params.accountId, req.body)));
+  app.post("/api/me/agent/:accountId/interview", h<{ accountId: string }>(async (ctx, req) => agent.saveInterview(ctx, req.params.accountId, req.body)));
+  app.post("/api/me/agent/:accountId/samples", h<{ accountId: string }>(async (ctx, req) => agent.samplePosts(ctx, deps.db, req.params.accountId, agentAi)));
+  app.post("/api/me/agent/:accountId/passport/confirm", h<{ accountId: string }>(async (ctx, req) => agent.confirmPassport(ctx, deps.db, req.params.accountId, req.body)));
+  app.post("/api/me/agent/:accountId/autopilot", h<{ accountId: string }>(async (ctx, req) => agent.setAutopilot(ctx, deps.db, req.params.accountId, req.body)));
+  app.post("/api/autopilot-posts/:id/action", h<{ id: string }>(async (ctx, req) => agent.ownerPostAction(ctx, deps.db, req.params.id, req.body)));
+  app.post("/api/me/agent/:accountId/pack/approve", h<{ accountId: string }>(async (ctx, req) => agent.approvePack(ctx, deps.db, req.params.accountId)));
+  app.post("/api/me/agent/:accountId/telegram/link", h<{ accountId: string }>(async (ctx, req) => agent.telegramLink(ctx, req.params.accountId, deps.telegram)));
+  app.post("/api/me/agent/:accountId/telegram/unlink", h<{ accountId: string }>(async (ctx, req) => agent.telegramUnlink(ctx, req.params.accountId)));
+  app.post("/api/me/agent/:accountId/likeness", h<{ accountId: string }>(async (ctx, req) => agent.grantLikeness(ctx, req.params.accountId)));
+  app.post("/api/me/agent/:accountId/likeness/revoke", h<{ accountId: string }>(async (ctx, req) => agent.revokeLikeness(ctx, { storage }, req.params.accountId)));
+  app.post("/api/me/agent/:accountId/photos", h<{ accountId: string }>(async (ctx, req) => {
+    if (!Buffer.isBuffer(req.body)) throw Object.assign(new Error("Ожидается файл (application/octet-stream)"), { status: 415 });
+    return agent.addPortraitPhoto(ctx, { storage, scanner }, req.params.accountId, { filename: fileName(req), data: req.body });
+  }));
+  app.post("/api/me/agent/:accountId/portraits", h<{ accountId: string }>(async (ctx, req) => agent.requestPortraits(ctx, req.params.accountId, req.body)));
+  app.post("/api/portrait-jobs/:id/choose", h<{ id: string }>(async (ctx, req) => agent.choosePortrait(ctx, deps.db, req.params.id, req.body)));
+  app.get("/api/companies/:id/autopilot", h<{ id: string }>(async (ctx, req) => agent.companyAutopilot(ctx, deps.db, req.params.id)));
+  app.post("/api/companies/:id/autopilot/review", h<{ id: string }>(async (ctx, req) => agent.reviewPosts(ctx, deps.db, req.params.id, req.body)));
+  app.post("/api/accounts/:id/agent/budget", h<{ id: string }>(async (ctx, req) => agent.setAgentBudget(ctx, req.params.id, req.body)));
+  // Стратегии, подписка, лиды.
+  const payments = deps.payments ?? new billing.DemoPaymentProvider();
+  app.post("/api/me/agent/:accountId/strategy", h<{ accountId: string }>(async (ctx, req) => agent.setMyStrategy(ctx, deps.db, req.params.accountId, req.body)));
+  app.post("/api/companies/:id/strategy", h<{ id: string }>(async (ctx, req) => agent.setCompanyStrategy(ctx, deps.db, req.params.id, req.body)));
+  app.post("/api/me/agent/:accountId/promo", h<{ accountId: string }>(async (ctx, req) => billing.redeemPromo(ctx, deps.db, req.params.accountId, req.body)));
+  app.post("/api/billing/checkout", h(async (ctx, req) => billing.startCheckout(ctx, deps.db, { payments, appUrl: process.env.APP_URL }, req.body)));
+  app.post("/api/billing/demo/:id/confirm", h<{ id: string }>(async (ctx, req) => billing.confirmDemoCheckout(ctx, deps.db, payments, req.params.id)));
+  app.get("/api/companies/:id/billing", h<{ id: string }>(async (ctx, req) => billing.companyBilling(ctx, deps.db, req.params.id)));
+  app.get("/api/promo-codes", h(async (ctx) => billing.listPromos(ctx)));
+  app.post("/api/promo-codes", h(async (ctx, req) => billing.createPromo(ctx, req.body)));
+  app.get("/api/me/outreach/:accountId", h<{ accountId: string }>(async (ctx, req) => outreach.myOutreach(ctx, req.params.accountId)));
+  app.get("/api/me/agent/:accountId/chat", h<{ accountId: string }>(async (ctx, req) => chat.chatHistory(ctx, req.params.accountId)));
+  app.post("/api/me/agent/:accountId/chat", h<{ accountId: string }>(async (ctx, req) => chat.agentChat(ctx, deps.db, req.params.accountId, req.body, agentAi)));
+  app.get("/api/me/agent/:accountId/plan", h<{ accountId: string }>(async (ctx, req) => chat.contentPlan(ctx, req.params.accountId)));
+  app.post("/api/me/outreach/:accountId/import", h<{ accountId: string }>(async (ctx, req) => outreach.importLeads(ctx, req.params.accountId, req.body)));
+  app.post("/api/outreach/:id/mark", h<{ id: string }>(async (ctx, req) => outreach.markOutreach(ctx, req.params.id, req.body)));
+  // Вебхук Stripe: подпись проверяется по сырому телу запроса.
+  app.register(async (sub) => {
+    sub.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => done(null, body));
+    sub.post("/billing/stripe/webhook", async (req: FastifyRequest) => billing.paymentWebhook(deps.db, payments, String(req.body ?? ""), req.headers as Record<string, string | undefined>));
+  });
+  const tgLimit = rateLimiter(120);
+  app.post("/telegram/webhook", async (req: FastifyRequest, reply) => {
+    if (!tgLimit(req.ip)) return reply.status(429).send();
+    if (!deps.telegram) return reply.status(404).send();
+    await agent.handleTelegramUpdate(deps.db, { telegram: deps.telegram, callbackSecret: process.env.TELEGRAM_CALLBACK_SECRET ?? "", webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET, agentAi },
+      req.headers["x-telegram-bot-api-secret-token"] as string | undefined, req.body);
+    return { ok: true };
+  });
   app.get("/api/portal/accounts/:id", h<{ id: string }>(async (ctx, req) => portal.portalAccount(ctx, req.params.id)));
 
   // LinkedIn OAuth. Работает только при заданных LINKEDIN_CLIENT_ID/SECRET/REDIRECT_URI.
@@ -351,7 +425,8 @@ export function buildApp(deps: AppDeps) {
     const cid = process.env.LINKEDIN_CLIENT_ID, redirect = process.env.LINKEDIN_REDIRECT_URI;
     if (!cid || !redirect) throw Object.assign(new Error("Интеграция LinkedIn не настроена: используйте публикацию через человека"), { status: 409 });
     const a = await accountScope(ctx.db, ctx, req.params.id);
-    requireOp(ctx, "manage_connection", { clientId: a.client_id, accountId: a.id });
+    // Сотрудник подключает свой профиль сам: официальный вход LinkedIn, пароль платформа не видит.
+    if (!(a.kind !== "company_page" && isAccountOwner(ctx, a.id))) requireOp(ctx, "manage_connection", { clientId: a.client_id, accountId: a.id });
     for (const [k, v] of pendingStates) if (v.exp < Date.now()) pendingStates.delete(k);
     const state = randomBytes(24).toString("hex");
     pendingStates.set(state, { accountId: a.id, userId: ctx.actor.id, exp: Date.now() + 10 * 60_000 });
@@ -386,7 +461,7 @@ export function buildApp(deps: AppDeps) {
       if (deps.secrets.delete) await deps.secrets.delete(ref);
       return reply.status(e?.status ?? 500).send(e?.message ?? "Не удалось сохранить подключение");
     }
-    return reply.redirect(`/#/accounts/${st.accountId}`);
+    return reply.redirect(actor.memberships.some((m) => m.role === "client" && m.scope_account_id === st.accountId) ? "/#/me/agent" : `/#/accounts/${st.accountId}`);
   });
 
   return app;

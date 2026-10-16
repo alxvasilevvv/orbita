@@ -123,7 +123,7 @@ describe("жизненный цикл данных", () => {
     const owner = await env.ctx("owner");
     await expect(life.deleteClientData(owner, { systemDb: env.db, storage, secrets: env.secrets }, a1.client_id, { confirm_name: "Northwind Robotics" })).rejects.toThrow(/Сначала/);
     const off = await life.startOffboarding(owner, { secrets: env.secrets }, a1.client_id);
-    expect(off.secrets_deleted).toBe(1);
+    expect(off.secrets_deleted).toBe(6); // 1 тестовое + 5 подключений сотрудников из сида
     expect(await env.secrets.get("tok:del")).toBeNull();
     await expect(life.deleteClientData(await env.ctx("ops"), { systemDb: env.db, storage, secrets: env.secrets }, a1.client_id, { confirm_name: "Northwind Robotics" })).rejects.toThrow(/владелец/);
     await expect(life.deleteClientData(owner, { systemDb: env.db, storage, secrets: env.secrets }, a1.client_id, { confirm_name: "Northwind" })).rejects.toThrow(/не совпадает/);

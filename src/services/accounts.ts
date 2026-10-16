@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { accountScope, assertAccountOwner, audit, ConflictError, emit, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
+import { accountScope, assertAccountOwner, audit, isAccountOwner, ConflictError, emit, requireOp, ValidationError, visibleAccountsFilter, type Ctx } from "./context";
 import { appAccessFromEnv, CAPABILITY_CATALOG, resolveCapabilities, type AccountKind } from "../core/capabilities";
 import { isValidTimeZone } from "../core/time";
 import { cancelPendingJobs } from "./jobs";
@@ -116,6 +116,7 @@ export async function refreshCapabilities(ctx: Ctx, accountId: string, source = 
 
 const ConsentInput = z.object({
   action_scope: z.enum(["publish_post", "comment", "react", "analytics_read", "profile_edit_tasks", "ai_processing"]),
+  // autopilot_posts и likeness_processing выдаются только через кабинет сотрудника с условиями (services/agent.ts).
   granted_by_name: z.string().min(1),
   evidence_ref: z.string().min(1),
 });
@@ -142,6 +143,12 @@ export async function revokeConsent(ctx: Ctx, accountId: string, scope: string) 
     if (scope === "publish_post") {
       cancelled = (await cancelPendingJobs(q, { accountId }, "consent_revoked", { resetScheduled: true })).length;
     }
+    if (scope === "publish_post" || scope === "autopilot_posts") {
+      // Автопилот: открытые посты отменяются, агент выключается до нового согласия владельца.
+      const { cancelOpenPosts } = await import("./agent");
+      cancelled += await cancelOpenPosts(q, accountId, "consent_revoked");
+      await q.query("UPDATE personal_agents SET autopilot = 'off', updated_at = now() WHERE account_id = $1", [accountId]);
+    }
     await audit(q, ctx, { action: "consent.revoked", entity_type: "consent", client_id: a.client_id, account_id: accountId, details: { scope, cancelled_jobs: cancelled } });
     await emit(q, "consent.revoked", a.client_id, { account_id: accountId, scope });
     return { cancelled_jobs: cancelled };
@@ -155,7 +162,8 @@ export async function hasConsent(q: { query: Ctx["db"]["query"] }, accountId: st
 /** Подключение OAuth. Токен уже сохранён в менеджере секретов; здесь только ссылка. */
 export async function recordOAuthConnection(ctx: Ctx, accountId: string, input: { external_subject: string; granted_scopes: string[]; secret_ref: string; expires_at?: string; organization_urns?: string[] }) {
   const a = await accountScope(ctx.db, ctx, accountId);
-  requireOp(ctx, "manage_connection", { clientId: a.client_id, accountId });
+  // Сотрудник подключает свой личный профиль сам; страницу компании и чужие аккаунты подключает агентство.
+  if (!(a.kind !== "company_page" && isAccountOwner(ctx, accountId))) requireOp(ctx, "manage_connection", { clientId: a.client_id, accountId });
   return ctx.db.tx(async (q) => {
     // Идентичность: личный профиль публикует от имени человека, страница компании только от имени организации,
     // которую подключивший пользователь администрирует (organizationAcls). Чужой профиль не принимается.

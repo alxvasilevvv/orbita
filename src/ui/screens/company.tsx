@@ -1,3 +1,4 @@
+import { CompanyAutopilot } from "./agent";
 import { useState } from "react";
 import { api, useApi, useAction, Loadable, fmt, t, num, useMe, ApiError } from "../lib";
 import { tx } from "../i18n";
@@ -50,7 +51,7 @@ export function CompaniesPage() {
 /** Кабинет компании: руководитель видит агрегаты, агентство дополнительно персональную таблицу аккаунтов. */
 export function CompanyPage({ id }: { id: string }) {
   const s = useApi<any>(`/api/companies/${id}`);
-  const [tab, setTab] = useState<"overview" | "missions" | "team" | "brief">("overview");
+  const [tab, setTab] = useState<"overview" | "autopilot" | "missions" | "team" | "brief">("overview");
   return (
     <Loadable s={s}>{(d) => (
       <>
@@ -58,10 +59,11 @@ export function CompanyPage({ id }: { id: string }) {
         <p className="lede">{t("Как компания выглядит снаружи, что делает команда и где нужны ваши решения. Агенты предлагают, сотрудники решают сами, офицер безопасности держит аккаунты в безопасной зоне.")}</p>
         {d.company.engagement_paused_at && <div className="notice warn">{t("Активность компании остановлена")}: {d.company.engagement_paused_reason}. {t("Снять остановку может команда агентства.")}</div>}
         <div className="tabs" role="tablist">
-          {([["overview", "Обзор"], ["missions", "Миссии агентов"], ["team", "Команда"], ["brief", "Бриф компании"]] as const).map(([k, l]) => (
+          {([["overview", "Обзор"], ["autopilot", "Автопилот"], ["missions", "Миссии агентов"], ["team", "Команда"], ["brief", "Бриф компании"]] as const).map(([k, l]) => (
             <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{t(l)}</button>))}
         </div>
         {tab === "overview" && <CompanyOverview d={d} reload={s.reload} onTab={setTab} />}
+        {tab === "autopilot" && <CompanyAutopilot id={id} />}
         {tab === "missions" && <Missions d={d} reload={s.reload} />}
         {tab === "team" && <Team d={d} reload={s.reload} />}
         {tab === "brief" && <Brief d={d} reload={s.reload} />}

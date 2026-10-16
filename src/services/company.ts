@@ -106,6 +106,7 @@ const BriefInput = z.object({
   compliance_ref: z.string().max(500).optional(),
   intensity: z.enum(["low", "normal"]).default("low"),
   email_domains: z.array(z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i)).max(10).default([]),
+  autopilot_review: z.enum(["auto", "company"]).default("auto"),
 });
 
 /** Новая версия брифа. Правку руководителя утверждает агентство; бриф для регулируемой отрасли требует compliance. */
@@ -114,13 +115,15 @@ export async function proposeBrief(ctx: Ctx, clientId: string, input: unknown) {
   requireOp(ctx, "direct_agents", { clientId });
   const d = BriefInput.parse(input);
   if ((d.industry === "crypto" || d.industry === "fin") && d.disclosure_mode !== "inline") d.disclosure_mode = "inline";
+  // Регулируемая отрасль: посты автопилота всегда проверяет компания.
+  if (d.industry === "crypto" || d.industry === "fin") d.autopilot_review = "company";
   return ctx.db.tx(async (q) => {
     const v = (await q.query("SELECT coalesce(max(version), 0) + 1 AS v FROM company_briefs WHERE client_id = $1", [clientId])).rows[0].v;
     await q.query("UPDATE company_briefs SET status = 'superseded' WHERE client_id = $1 AND status = 'draft'", [clientId]);
     const b = (await q.query(
-      `INSERT INTO company_briefs(client_id, version, industry, positioning, topics, forbidden_topics, disclosure_mode, disclosure_text, disclaimers, licenses, target_countries, compliance_owner, compliance_ref, intensity, email_domains, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
-      [clientId, v, d.industry, d.positioning, JSON.stringify(d.topics), d.forbidden_topics, d.disclosure_mode, d.disclosure_text, JSON.stringify(d.disclaimers), JSON.stringify(d.licenses), d.target_countries, d.compliance_owner ?? null, d.compliance_ref ?? null, d.intensity, d.email_domains.map((x) => x.toLowerCase()), ctx.actor.id])).rows[0];
+      `INSERT INTO company_briefs(client_id, version, industry, positioning, topics, forbidden_topics, disclosure_mode, disclosure_text, disclaimers, licenses, target_countries, compliance_owner, compliance_ref, intensity, email_domains, created_by, autopilot_review)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+      [clientId, v, d.industry, d.positioning, JSON.stringify(d.topics), d.forbidden_topics, d.disclosure_mode, d.disclosure_text, JSON.stringify(d.disclaimers), JSON.stringify(d.licenses), d.target_countries, d.compliance_owner ?? null, d.compliance_ref ?? null, d.intensity, d.email_domains.map((x) => x.toLowerCase()), ctx.actor.id, d.autopilot_review])).rows[0];
     await audit(q, ctx, { action: "brief.proposed", entity_type: "company_brief", entity_id: b.id, client_id: clientId, details: { version: v, industry: d.industry } });
     return b;
   });

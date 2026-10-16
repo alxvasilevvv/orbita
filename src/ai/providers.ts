@@ -73,3 +73,11 @@ export function aiProviderFromEnv(env = process.env): AiProvider {
   if (env.AI_PROVIDER === "openai_compatible" && env.AI_BASE_URL && env.AI_API_KEY && env.AI_MODEL) return new OpenAiCompatibleProvider(env.AI_API_KEY, env.AI_MODEL, env.AI_BASE_URL);
   return new DemoAiProvider();
 }
+
+/** Модель личных агентов сотрудников: по умолчанию Opus (AGENT_MODEL), тот же провайдер и ключ. */
+export function agentProviderFromEnv(env = process.env): AiProvider {
+  const model = env.AGENT_MODEL ?? "claude-opus-5-5";
+  if (env.AI_PROVIDER === "anthropic" && env.ANTHROPIC_API_KEY) return new AnthropicProvider(env.ANTHROPIC_API_KEY, model);
+  if (env.AI_PROVIDER === "openai_compatible" && env.AI_BASE_URL && env.AI_API_KEY) return new OpenAiCompatibleProvider(env.AI_API_KEY, env.AGENT_MODEL ?? env.AI_MODEL ?? model, env.AI_BASE_URL);
+  return new DemoAiProvider();
+}

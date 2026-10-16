@@ -13,7 +13,7 @@
     "i18n:check": "tsx scripts/i18n-check.ts",
     "loadtest": "tsx scripts/loadtest.ts",
     "test:pg": "TEST_PG_ADMIN_URL=${TEST_PG_ADMIN_URL:-postgres://postgres@localhost:5432/postgres} vitest run",
-    "e2e": "mkdir -p e2e/shots && node e2e/flow.mjs && node e2e/b2b.mjs && node e2e/smoke.mjs"
+    "e2e": "mkdir -p e2e/shots && node e2e/flow.mjs && node e2e/b2b.mjs && node e2e/autopilot.mjs && node e2e/smoke.mjs"
   },
   "author": "",
   "license": "ISC",

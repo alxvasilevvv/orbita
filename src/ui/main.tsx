@@ -12,6 +12,7 @@ import { TeamPage, IncidentsPage } from "./screens/team";
 import { AgencyReportPage, ExportsPage } from "./screens/agency";
 import { PortalPage } from "./screens/portal";
 import { CompaniesPage, CompanyPage, MissionPage, MyActions, InvitePage } from "./screens/company";
+import { MyAgentPage, OutreachPage, DemoPayPage, RenewPage } from "./screens/agent";
 
 function Bell() {
   const [open, setOpen] = useState(false);
@@ -52,7 +53,9 @@ function App() {
   const m = me.data;
   const ops = new Set(m?.agency_ops ?? []);
   const nav: [string, string, number?][] = m?.company_admin
-    ? [["/", "Компания"], ...(m.employee ? [["/me", "Мои предложения"] as [string, string]] : [])]
+    ? [["/", "Компания"], ...(m.personal_agent ? [["/me/agent", "Мой агент"] as [string, string]] : []), ...(m.employee ? [["/me/actions", "Мои предложения"] as [string, string]] : [])]
+    : m?.personal_agent
+    ? [["/", "Мой агент"], ["/me/actions", "Предложения"], ["/me/outreach", "Лиды и сообщения"]]
     : m?.client_only
     ? [["/", "Кабинет клиента"]]
     : m?.auditor_only ? [["/", "Журнал аудита"]]
@@ -70,10 +73,14 @@ function App() {
   let page: ReactNode;
   const acc = route.match(/^\/accounts\/([^/]+)$/), c = route.match(/^\/content\/([^/]+)$/), rep = route.match(/^\/reports\/([^/]+)$/);
   const comp = route.match(/^\/companies\/([^/]+)$/), mis = route.match(/^\/missions\/([^/]+)$/), inv = route.match(/^\/invite\/([^/]+)$/);
+  const pay = route.match(/^\/billing\/demo\/([^/?]+)/);
+  const employeePage = () => route.startsWith("/me/actions") ? <MyActions /> : route.startsWith("/me/outreach") ? <OutreachPage /> : route.startsWith("/me/pay") ? <RenewPage /> : <MyAgentPage />;
   if (inv) page = <InvitePage token={inv[1]} onAccepted={(id) => switchUser(id)} />;
+  else if (pay && m) page = <DemoPayPage id={pay[1]} />;
   else if (!m) page = me.error ? <div className="notice info">{t("Выберите пользователя внизу слева, чтобы войти.")}</div> : <p className="muted">{t("Загрузка…")}</p>;
   else if (m.auditor_only) page = <Audit />;
-  else if (m.company_admin) page = mis ? <MissionPage id={mis[1]} /> : c ? <ContentPage id={c[1]} /> : rep ? <ReportPage id={rep[1]} /> : route.startsWith("/me") ? <MyActions /> : <CompanyPage id={comp?.[1] ?? m.company_ids![0]} />;
+  else if (m.company_admin) page = mis ? <MissionPage id={mis[1]} /> : c ? <ContentPage id={c[1]} /> : rep ? <ReportPage id={rep[1]} /> : route.startsWith("/me") ? employeePage() : <CompanyPage id={comp?.[1] ?? m.company_ids![0]} />;
+  else if (m.personal_agent && !m.internal) page = c ? <ContentPage id={c[1]} /> : employeePage();
   else if (m.client_only) page = c ? <ContentPage id={c[1]} /> : rep ? <ReportPage id={rep[1]} /> : <PortalPage />;
   else if (acc) page = <AccountPage id={acc[1]} />;
   else if (comp) page = <CompanyPage id={comp[1]} />;
@@ -99,7 +106,12 @@ function App() {
       <MeCtx.Provider value={m ?? null}>
         <div className="shell" key={locale}>
           <nav className="side" aria-label={t("Разделы")}>
-            <div className="brand">Agency LinkedIn OS<small>{t("операционная система агентства")}</small></div>
+            <div className="brand">
+              <span className="x-mark" aria-hidden="true">X</span>
+              <span className="li" aria-hidden="true">in</span>
+              <span className="wm"><b>TRAIEX</b> · LinkedIn OS</span>
+              <small>{t("агенты ведут LinkedIn вашей команды")}</small>
+            </div>
             {nav.map(([p, l, n]) => <a key={p} href={`#${p}`} aria-current={active(p) ? "page" : undefined}>{t(l)}{n ? <span className="count num">{n}</span> : null}</a>)}
             <div className="who">
               <label htmlFor="who" className="muted small">{t("Вы вошли как (демо-вход)")}</label>

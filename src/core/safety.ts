@@ -4,6 +4,7 @@
  * дважды (перед предложением и перед исполнением), а счётчики считаются в одной транзакции с блокировкой аккаунта.
  * Цифры и правила: docs/b2b-orchestration-concept.md, раздел 5 (версия после шести аудитов).
  */
+import { levelLimits } from "./strategy";
 export type ActionKind = "react" | "comment" | "repost_note" | "post";
 export interface Window3 { day: number; hour: number; week: number }
 
@@ -33,6 +34,8 @@ export interface SafetyState {
   pausedUntil?: Date | null;   // пауза, которую поставил сам сотрудник
   frequency?: "weekly" | "biweekly" | "paused";
   selfReportedActivity?: "rare" | "weekly" | "daily" | null;
+  /** Действующий уровень стратегии (core/strategy.ts). Без уровня: штатные лимиты сотрудника. */
+  level?: import("./strategy").StrategyLevel | null;
 }
 
 const DAY = 864e5;
@@ -41,7 +44,7 @@ export function inRamp(s: SafetyState, now: Date) { return now.getTime() - s.ram
 /** Действующие лимиты с учётом разгона, охлаждения и половинного режима. */
 export function limitsFor(s: SafetyState, kind: ActionKind, now: Date): Window3 & { mode: "blocked" | "ramp" | "half" | "normal" } {
   if (s.excluded || (s.cooldownUntil && s.cooldownUntil > now) || s.frequency === "paused" || (s.pausedUntil && s.pausedUntil > now)) return { day: 0, hour: 0, week: 0, mode: "blocked" };
-  const base = inRamp(s, now) ? LIMITS[kind].ramp : LIMITS[kind].normal;
+  const base = inRamp(s, now) ? LIMITS[kind].ramp : s.level ? levelLimits(s.level, kind) : LIMITS[kind].normal;
   if (s.halfUntil && s.halfUntil > now) {
     const h = (n: number) => Math.max(kind === "react" ? 1 : 0, Math.floor(n / 2));
     return { day: h(base.day), hour: Math.max(h(base.hour), h(base.day) ? 1 : 0), week: h(base.week), mode: "half" };

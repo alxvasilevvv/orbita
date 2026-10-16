@@ -8,18 +8,18 @@ const errs = [];
 page.on("pageerror", (e) => errs.push(e.message));
 page.on("console", (m) => m.type() === "error" && !m.text().includes("TUNNEL") && errs.push(m.text()));
 page.on("response", (r) => { if (r.status() === 404 || r.status() >= 500) errs.push(`${r.status()} ${r.url()}`); });
-const as = async (frag) => { await page.goto(B + "/"); await page.evaluate((id) => localStorage.setItem("uid", id), uid(frag)); };
+const as = async (frag) => { await page.goto(B + "/"); await page.waitForTimeout(300); await page.evaluate((id) => localStorage.setItem("uid", id), uid(frag)); await page.goto(B + "/#/"); await page.reload(); await page.waitForTimeout(400); };
 const shot = async (n) => { await page.waitForTimeout(700); await page.screenshot({ path: `./e2e/shots/${n}.png`, fullPage: true }); };
 
 await as("Денис"); await page.goto(B + "/#/"); await page.reload(); await shot("01-overview");
 await page.goto(B + "/#/accounts"); await shot("02-accounts");
 // редактор согласует материал из очереди
-await as("Екатерина"); await page.goto(B + "/#/approvals"); await page.reload(); await shot("03-approvals");
+await as("Екатерина"); await page.goto(B + "/#/approvals"); await page.reload(); await page.waitForSelector("text=Почему мы полгода пилотировали один завод", { timeout: 20000 }); await shot("03-approvals");
 await page.click("text=Почему мы полгода пилотировали один завод"); await page.waitForTimeout(800);
 await shot("04-content-editor-review");
 await page.click("button:has-text('Согласовать версию')"); await page.waitForTimeout(800);
 // клиент согласует
-await as("Джон"); await page.goto(B + "/#/approvals"); await page.reload(); await page.waitForTimeout(500);
+await as("Джон"); await page.goto(B + "/#/approvals"); await page.reload(); await page.waitForSelector("text=Почему мы полгода пилотировали один завод", { timeout: 20000 });
 await page.click("text=Почему мы полгода пилотировали один завод"); await page.waitForTimeout(800);
 await page.click("button:has-text('Согласовать версию')"); await page.waitForTimeout(800);
 // менеджер планирует

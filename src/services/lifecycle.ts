@@ -11,6 +11,7 @@ import { cancelPendingJobs } from "./jobs";
  * обязана быть в списке: иначе процедура откажется работать (защита от забытой новой таблицы).
  */
 export const DELETION_ORDER = [
+  "billing_events", "agent_messages", "content_plans", "telegram_outbox", "autopilot_posts", "portrait_jobs", "outreach_items", "promo_redemptions", "subscriptions", "billing_checkouts", "personal_agents", "promo_codes",
   "mission_actions", "agent_runs", "agent_missions", "safety_events", "account_safety", "employee_profiles", "employee_invites", "company_briefs",
   "notifications", "outbox", "workflow_runs", "workflow_definitions", "exports",
   "engagement_recommendations", "engagement_sources",

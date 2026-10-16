@@ -107,10 +107,12 @@ export async function seedDemo(db: Db) {
     ["mei.l@northwind.example", "Mei Lin (ML Engineer)", ["ml"], "Asia/Singapore"],
     ["omar.h@northwind.example", "Omar Haddad (Head of Talent)", ["hiring"], "Asia/Dubai"],
   ];
+  const empAcc: Record<string, { acc: string; uid: string; name: string; tz: string }> = {};
   for (const [email, name, tags, tz] of employees) {
     const uid = await mk(email, name, 0, ["en"]);
     const acc_ = (await db.query("INSERT INTO managed_accounts(client_id, kind, display_name, primary_language, timezone, manager_id, status) VALUES ($1,'employee',$2,'en',$3,$4,'active') RETURNING id", [c1, name, tz, u.manager])).rows[0].id;
     await m(uid, "client", null, acc_);
+    empAcc[email.split(".")[0]] = { acc: acc_, uid, name, tz };
     await db.query("INSERT INTO employee_profiles(account_id, client_id, expertise_tags, frequency, self_reported_activity, employment_verified_at, verification_method) VALUES ($1,$2,$3,'weekly','weekly', now(), 'email_domain')", [acc_, c1, tags]);
     await db.query("INSERT INTO account_safety(account_id, client_id, ramp_started_at) VALUES ($1,$2, now() - interval '30 days')", [acc_, c1]);
     await writeCapabilities(db, acc_, c1, "employee", "none", [], "seed");
@@ -127,6 +129,84 @@ export async function seedDemo(db: Db) {
   const pageItem = await item(c1, a2, "Как мы снизили простои на 18% с предиктивными моделями", "draft", "Наша ML-команда перевела три завода на предиктивное обслуживание: модели на телеметрии оборудования, кластер Kubernetes для инференса, отдельный контур безопасности данных. Делимся архитектурой и тем, что не сработало.", u.author);
   await db.query("UPDATE content_items SET state = 'published' WHERE id = $1", [pageItem]);
   await db.query("INSERT INTO external_publications(client_id, account_id, content_item_id, external_id, url, evidence_type, published_at) VALUES ($1,$2,$3,'urn:li:activity:7300000000000000042','https://www.linkedin.com/feed/update/urn:li:activity:7300000000000000042/','manual_mark', now() - interval '3 hours')", [c1, a2, pageItem]);
+  await seedAutopilot(db, c1, empAcc);
   await db.query("INSERT INTO metric_snapshots(client_id, account_id, metric_key, value, observed_at, source, availability_status) VALUES ($1,$2,'followers',1840, now() - interval '31 days','manual_entry','available'),($1,$2,'followers',2115, now() - interval '1 day','manual_entry','available')", [c1, a2]);
   return { agency_id: ag, seeded: true, users: u };
+}
+
+/** Демо автопилота: пять сотрудников Northwind прошли онбординг, паспорта подтверждены, профили подключены. */
+async function seedAutopilot(db: Db, clientId: string, emp: Record<string, { acc: string; uid: string; name: string; tz: string }>) {
+  const { buildPassport, passportHash, roleByKey, claimsFromInterview, AUTOPILOT_TERMS_TEXT } = await seedDeps();
+  const { DbSecretStore } = await import("../services/secrets");
+  const { contentHash } = await import("../core/contentStateMachine");
+  const secrets = new DbSecretStore(db);
+  await db.query("UPDATE company_briefs SET autopilot_review = 'company' WHERE client_id = $1 AND status = 'approved'", [clientId]);
+  const people: [string, string, Record<string, string>, string[]][] = [
+    ["anna", "data_ml", { now: "I lead the ML team that builds predictive maintenance models for factory equipment.", win: "We moved model inference to a separate Kubernetes cluster because equipment telemetry arrives in bursts. Downtime alerts now arrive before the failure, not after it.", lesson: "Our first model was trained on clean lab data and failed on noisy sensors. Since then every model is validated on raw telemetry from a real line.", stack: "Python, PyTorch, feature stores and streaming telemetry pipelines are my daily tools." }, ["ml", "data"]],
+    ["raj", "backend", { now: "I build the data platform that collects telemetry from three plants into one lake.", win: "I redesigned ingestion so that a plant outage no longer blocks data from the other two plants.", lesson: "We tried exactly-once delivery everywhere and paid for it in latency. Idempotent writes turned out to be simpler and cheaper.", stack: "Kafka, Postgres, dbt and a lot of careful schema evolution." }, ["data", "kubernetes"]],
+    ["lena", "platform", { now: "I run the internal platform on Kubernetes for all engineering teams.", win: "We cut the time to get a new service into production from two weeks to one day with golden paths.", lesson: "A platform nobody asked for gets ignored. We now start every platform feature with three internal users.", stack: "Kubernetes, Terraform, Argo CD and policy as code." }, ["kubernetes", "security"]],
+    ["tom", "security", { now: "I am responsible for application and cloud security at the company.", win: "We moved secret scanning into every pull request and closed the long tail of leaked keys in one quarter.", lesson: "Security reviews at the end of a project create enemies. Short design reviews at the start create allies.", stack: "Threat modeling, cloud IAM, SAST and incident response drills." }, ["security"]],
+    ["mei", "data_ml", { now: "I am an ML engineer working on anomaly detection for vibration sensors.", win: "My anomaly detector found a bearing fault three weeks before the scheduled inspection.", lesson: "I spent a month tuning a deep model before trying a simple baseline that was almost as good.", stack: "Signal processing, PyTorch, MLflow and careful experiment tracking." }, ["ml"]],
+  ];
+  const now = Date.now();
+  for (const [key, roleKey, answers, topics] of people) {
+    const e = emp[key];
+    if (!e) continue;
+    const role = roleByKey(roleKey)!;
+    const passport = buildPassport(role, e.name, answers, { topics, length: "medium", register: "conversational", humor: false, language: "en", phrases: [], never_topics: ["salary", "customers by name"] });
+    const hash = passportHash(passport);
+    const src = (await db.query("INSERT INTO knowledge_sources(client_id, account_id, title, kind, body, usage_rights, created_by) VALUES ($1,$2,'Интервью личного агента','interview',$3,'internal_and_ai',$4) RETURNING id", [clientId, e.acc, JSON.stringify(answers), e.uid])).rows[0].id;
+    for (const c of claimsFromInterview(answers)) await db.query("INSERT INTO verified_claims(client_id, account_id, statement, source_id, confirmed_by, valid_as_of) VALUES ($1,$2,$3,$4,$5,current_date)", [clientId, e.acc, c, src, e.name]);
+    await db.query(`INSERT INTO personal_agents(account_id, client_id, user_id, role_key, onboarding_step, interview, interview_source_id, passport, passport_version, passport_hash, passport_confirmed_at, autopilot, veto_hours, spent_month, spent_usd)
+        VALUES ($1,$2,$3,$4,'done',$5,$6,$7,1,$8,now() - interval '20 days','on',24,$9,$10)`, [e.acc, clientId, e.uid, roleKey, JSON.stringify(answers), src, JSON.stringify(passport), hash, new Date().toISOString().slice(0, 7), 1.8]);
+    await db.query("INSERT INTO consents(client_id, account_id, action_scope, granted_by_name, evidence_ref, granted_by_user_id, terms) VALUES ($1,$2,'autopilot_posts',$3,'Автопилот: согласие в платформе (демо)',$4,$5)",
+      [clientId, e.acc, e.name, e.uid, JSON.stringify({ veto_hours: 24, passport_hash: hash, passport_version: 1, review_by_company: true, text: AUTOPILOT_TERMS_TEXT })]);
+    const urn = `urn:li:person:demo${key}`;
+    const ref = `linkedin/${e.acc}/seed`;
+    await secrets.set(ref, `demo-token-${key}`);
+    await db.query("UPDATE managed_accounts SET linkedin_urn = $2, profile_url = $3 WHERE id = $1", [e.acc, urn, `https://www.linkedin.com/in/demo-${key}`]);
+    await db.query("INSERT INTO oauth_connections(client_id, account_id, external_subject, granted_scopes, secret_ref, expires_at, status) VALUES ($1,$2,$3,'{openid,profile,w_member_social}',$4, now() + interval '50 days','active')", [clientId, e.acc, urn, ref]);
+    await db.query(`INSERT INTO capability_snapshots(client_id, account_id, operation, mode, permission, access_basis, api_version, unavailable_reason, alternative, source, checked_at)
+        VALUES ($1,$2,'publish_post_member','api','w_member_social','Share on LinkedIn (демо-подключение)','202608',NULL,'Публикация через человека','seed', now() + interval '1 second')`, [clientId, e.acc]);
+  }
+  // Подписка $200/мес: пятеро оплачены компанией, у Omar пока нет. Промокод на месяц бесплатно для демо.
+  for (const key of ["anna", "raj", "lena", "tom", "mei"]) {
+    const e = emp[key];
+    await db.query("INSERT INTO subscriptions(account_id, client_id, status, period_end, provider) VALUES ($1,$2,'active', now() + interval '20 days','demo')", [e.acc, clientId]);
+  }
+  const agency = (await db.query("SELECT agency_id FROM clients WHERE id = $1", [clientId])).rows[0].agency_id;
+  await db.query("INSERT INTO promo_codes(agency_id, code, free_months, max_redemptions) VALUES ($1,'FIRSTMONTH',1,500)", [agency]);
+  await db.query("UPDATE clients SET autopilot_strategy = 'growth' WHERE id = $1", [clientId]);
+  await db.query("UPDATE personal_agents SET strategy = 'steady' WHERE account_id = $1", [emp.tom.acc]);
+  for (const [n, t, c, u] of [["Daniel Brooks", "Head of Maintenance", "Atlas Steel", "https://www.linkedin.com/in/demo-daniel-brooks"], ["Sofia Rossi", "VP Operations", "Nordic Paper", "https://www.linkedin.com/in/demo-sofia-rossi"], ["Kenji Watanabe", "Plant Reliability Lead", "Kobe Motors", "https://www.linkedin.com/in/demo-kenji-watanabe"]]) {
+    await db.query("INSERT INTO outreach_items(client_id, account_id, kind, lead_name, lead_title, lead_company, lead_url, source) VALUES ($1,$2,'invite',$3,$4,$5,$6,'sales_navigator_export')", [clientId, emp.anna.acc, n, t, c, u]);
+  }
+  // Посты: опубликованный, готовый к выходу (проверен компанией), ожидающий проверки компании.
+  const mk = async (key: string, status: string, hoursFromNow: number, tag: string, body: string, reviewed: boolean) => {
+    const e = emp[key];
+    const at = new Date(now + hoursFromNow * 36e5);
+    const it = (await db.query("INSERT INTO content_items(client_id, account_id, title, objective, pillar, state, approved_version_id) VALUES ($1,$2,$3,'autopilot',$4,$5,NULL) RETURNING id", [clientId, e.acc, `Автопилот: ${tag}`, tag, status === "published" ? "published" : "draft"])).rows[0].id;
+    const h = await contentHash({ body, media_ids: [], target_account_id: e.acc });
+    const v = (await db.query("INSERT INTO content_versions(client_id, content_item_id, version, body, target_account_id, content_hash, origin) VALUES ($1,$2,1,$3,$4,$5,'ai_draft') RETURNING id", [clientId, it, body, e.acc, h])).rows[0].id;
+    await db.query("UPDATE content_items SET current_version_id = $2::uuid, approved_version_id = CASE WHEN state = 'published' THEN $2::uuid ELSE NULL END WHERE id = $1", [it, v]);
+    let url: string | null = null;
+    if (status === "published") {
+      url = `https://www.linkedin.com/feed/update/urn:li:share:73000000000000${Math.floor(Math.random() * 9000 + 1000)}/`;
+      await db.query("INSERT INTO external_publications(client_id, account_id, content_item_id, external_id, url, evidence_type, published_at) VALUES ($1,$2,$3,$4,$5,'api_confirmed',$6)", [clientId, e.acc, it, url.split("update/")[1].replace("/", ""), url, at.toISOString()]);
+    }
+    const consent = (await db.query("SELECT id FROM consents WHERE account_id = $1 AND action_scope = 'autopilot_posts' AND revoked_at IS NULL", [e.acc])).rows[0].id;
+    const { createHash } = await import("node:crypto");
+    await db.query(`INSERT INTO autopilot_posts(client_id, account_id, kind, slot_key, topic_tag, topic_title, publish_at, status, content_item_id, body, body_sha256, review_required, reviewed_by, reviewed_at, consent_id, external_url)
+        VALUES ($1,$2,'post',$3,$4,$4,$5,$6,$7,$8,$9,true,$10,$11,$12,$13)`,
+      [clientId, e.acc, `seed:${status}:${key}`, tag, at.toISOString(), status, it, body, createHash("sha256").update(body).digest("hex"), reviewed ? (await db.query("SELECT user_id FROM memberships WHERE role = 'client_admin' AND scope_client_id = $1 LIMIT 1", [clientId])).rows[0]?.user_id ?? null : null, reviewed ? new Date(now - 36e5).toISOString() : null, consent, url]);
+  };
+  await mk("anna", "published", -72, "ml", "One thing I learned this year.\n\nWe moved model inference to a separate Kubernetes cluster because equipment telemetry arrives in bursts.\n\nWhat worked: every model is validated on raw telemetry from a real line.\n\nHow does your team handle this?\n\n#ml", true);
+  await mk("lena", "veto_window", 20, "kubernetes", "A short breakdown from our practice.\n\nWe cut the time to get a new service into production from two weeks to one day with golden paths.\n\nWhat I would do differently: start every platform feature with three internal users.\n\nCurious how others approach it.\n\n#kubernetes", true);
+  await mk("raj", "review", 40, "data", "Sharing an experience that may help other teams.\n\nI redesigned ingestion so that a plant outage no longer blocks data from the other two plants.\n\nWhat worked: idempotent writes turned out to be simpler and cheaper than exactly-once delivery everywhere.\n\nWhat pitfalls have you seen?\n\n#data", false);
+}
+
+async function seedDeps() {
+  const a = await import("../core/autopilot");
+  const { AUTOPILOT_TERMS } = await import("../services/agent");
+  return { ...a, AUTOPILOT_TERMS_TEXT: AUTOPILOT_TERMS };
 }
