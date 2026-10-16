@@ -52,6 +52,49 @@ async function ensureAgent(q: Queryable, a: { id: string; client_id: string }, u
 
 const ownedIds = (ctx: Ctx) => ctx.actor.memberships.filter((m) => m.role === "client" && m.scope_account_id && !m.revoked_at).map((m) => m.scope_account_id as string);
 
+/**
+ * Добавление второй сети сотруднику (X). Создаёт отдельный аккаунт X в той же компании,
+ * переносит подтверждённый паспорт голоса и стратегию с основного аккаунта, чтобы агент был готов сразу.
+ * Нужны своя подписка и подключение X: аккаунт встаёт на шаг оплаты.
+ */
+export async function addNetwork(ctx: Ctx, systemDb: Db, input: unknown) {
+  const d = z.object({ network: z.enum(["x"]) }).parse(input);
+  const mine = (await ctx.db.query(`SELECT a.id, a.client_id, a.timezone, a.display_name, a.network, a.kind FROM managed_accounts a
+      WHERE a.id = ANY($1::uuid[]) AND a.kind = 'employee' ORDER BY (a.network = 'linkedin') DESC`, [ownedIds(ctx)])).rows;
+  if (!mine.length) throw new ValidationError("Сначала подключите основной аккаунт");
+  if (mine.some((a: any) => a.network === d.network)) throw new ConflictError(`У вас уже есть аккаунт ${d.network.toUpperCase()}`);
+  const base = mine[0];
+  const src = (await systemDb.query("SELECT role_key, passport, passport_hash, passport_version, passport_confirmed_at, strategy, interview, interview_source_id FROM personal_agents WHERE account_id = $1", [base.id])).rows[0] ?? null;
+  const prof = (await systemDb.query("SELECT expertise_tags, frequency, self_reported_activity FROM employee_profiles WHERE account_id = $1", [base.id])).rows[0];
+  const kn = src?.interview_source_id ? (await systemDb.query("SELECT title, kind, body FROM knowledge_sources WHERE id = $1", [src.interview_source_id])).rows[0] : null;
+  const srcClaims = src?.interview_source_id ? (await systemDb.query("SELECT statement FROM verified_claims WHERE source_id = $1", [src.interview_source_id])).rows : [];
+  return systemDb.tx(async (q) => {
+    const name = `${base.display_name.replace(/\s*\(.*\)$/, "")} (X)`;
+    const acc = (await q.query("INSERT INTO managed_accounts(client_id, kind, display_name, primary_language, timezone, network, status) VALUES ($1,'employee',$2,'en',$3,'x','active') RETURNING id", [base.client_id, name, base.timezone])).rows[0].id;
+    await q.query("INSERT INTO memberships(user_id, agency_id, role, scope_account_id) VALUES ($1,$2,'client',$3)", [ctx.actor.id, ctx.actor.agency_id, acc]);
+    await q.query("INSERT INTO employee_profiles(account_id, client_id, expertise_tags, frequency, self_reported_activity, employment_verified_at, verification_method) VALUES ($1,$2,$3,$4,$5, now(), 'hr_confirmation')",
+      [acc, base.client_id, prof?.expertise_tags ?? [], prof?.frequency ?? "weekly", prof?.self_reported_activity ?? "weekly"]);
+    await q.query("INSERT INTO account_safety(account_id, client_id) VALUES ($1,$2)", [acc, base.client_id]);
+    const { writeCapabilities, writeXCapability } = await import("./accounts");
+    await writeCapabilities(q, acc, base.client_id, "employee", "none", [], "add_network");
+    await writeXCapability(q, acc, base.client_id, false);
+    // Переносим паспорт и стратегию: агент X готов писать сразу, сотруднику остаётся оплата и подключение X.
+    const confirmed = src?.passport_confirmed_at ? "now()" : "NULL";
+    await q.query(`INSERT INTO personal_agents(account_id, client_id, user_id, role_key, onboarding_step, interview, interview_source_id, passport, passport_hash, passport_version, passport_confirmed_at, strategy)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,coalesce($10,0), ${confirmed}, $11)`,
+      [acc, base.client_id, ctx.actor.id, src?.role_key ?? null, src?.passport_confirmed_at ? "payment" : "role", src?.interview ? JSON.stringify(src.interview) : "{}", src?.interview_source_id ?? null,
+       src?.passport ? JSON.stringify(src.passport) : null, src?.passport_hash ?? null, src?.passport_version ?? 0, src?.strategy ?? null]);
+    if (kn) {
+      // Копируем факты сотрудника как источник X-аккаунта (его слова), чтобы агент писал из подтверждённого.
+      const nid = (await q.query("INSERT INTO knowledge_sources(client_id, account_id, title, kind, body, usage_rights, created_by) VALUES ($1,$2,$3,$4,$5,'internal_and_ai',$6) RETURNING id", [base.client_id, acc, kn.title, kn.kind, kn.body, ctx.actor.id])).rows[0].id;
+      await q.query("UPDATE personal_agents SET interview_source_id = $2 WHERE account_id = $1", [acc, nid]);
+      for (const c of srcClaims) await q.query("INSERT INTO verified_claims(client_id, account_id, statement, source_id, confirmed_by, valid_as_of) VALUES ($1,$2,$3,$4,$5,current_date)", [base.client_id, acc, c.statement, nid, name]);
+    }
+    await audit(q, ctx, { action: "agent.network_added", entity_type: "managed_account", entity_id: acc, client_id: base.client_id, account_id: acc, details: { network: "x", passport_copied: !!src?.passport_confirmed_at } });
+    return { account_id: acc, passport_ready: !!src?.passport_confirmed_at };
+  });
+}
+
 /* ---------- Кабинет сотрудника ---------- */
 export async function myAgent(ctx: Ctx, systemDb: Db, now = new Date()) {
   const out = [];

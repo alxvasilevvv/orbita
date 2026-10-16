@@ -1,5 +1,8 @@
 /** Английский словарь интерфейса. Ключ: русская строка. Проверка полноты: npx tsx scripts/i18n-check.ts */
 export const EN: Record<string, string> = {
+  "агенты ведут соцсети вашей команды": "agents run your team's social presence",
+  "Аккаунт X добавлен": "X account added",
+  "Добавить аккаунт X": "Add an X account",
   "Аккаунт X не подключён: твиты не смогут выйти.": "Your X account is not connected: tweets cannot go out.",
   "Подключаем X": "Connecting X",
   "агенты ведут LinkedIn вашей команды": "agents run your team's LinkedIn",

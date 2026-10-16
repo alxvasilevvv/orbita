@@ -60,7 +60,7 @@ const EMPLOYEE_ROUTES = new Set([
   "POST /api/me/agent/:accountId/strategy", "POST /api/me/agent/:accountId/promo", "POST /api/billing/checkout", "POST /api/billing/demo/:id/confirm",
   "GET /api/me/outreach/:accountId", "POST /api/me/outreach/:accountId/import", "POST /api/outreach/:id/mark",
   "GET /api/me/agent/:accountId/chat", "POST /api/me/agent/:accountId/chat", "GET /api/me/agent/:accountId/plan",
-  "POST /api/me/agent/:accountId/x/connect",
+  "POST /api/me/agent/:accountId/x/connect", "POST /api/me/agent/add-network",
 ]);
 const CLIENT_ADMIN_ROUTES = new Set([
   "GET /api/me", "PATCH /api/me", "GET /api/meta", "GET /api/notifications", "POST /api/notifications/read",
@@ -404,6 +404,7 @@ export function buildApp(deps: AppDeps) {
   app.post("/api/me/agent/:accountId/chat", h<{ accountId: string }>(async (ctx, req) => chat.agentChat(ctx, deps.db, req.params.accountId, req.body, agentAi)));
   app.get("/api/me/agent/:accountId/plan", h<{ accountId: string }>(async (ctx, req) => chat.contentPlan(ctx, req.params.accountId)));
   app.post("/api/me/agent/:accountId/x/connect", h<{ accountId: string }>(async (ctx, req) => agent.connectX(ctx, deps.db, deps.secrets as any, req.params.accountId)));
+  app.post("/api/me/agent/add-network", h(async (ctx, req) => agent.addNetwork(ctx, deps.db, req.body)));
   app.post("/api/me/outreach/:accountId/import", h<{ accountId: string }>(async (ctx, req) => outreach.importLeads(ctx, req.params.accountId, req.body)));
   app.post("/api/outreach/:id/mark", h<{ id: string }>(async (ctx, req) => outreach.markOutreach(ctx, req.params.id, req.body)));
   // Вебхук Stripe: подпись проверяется по сырому телу запроса.

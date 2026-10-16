@@ -107,10 +107,10 @@ function App() {
         <div className="shell" key={locale}>
           <nav className="side" aria-label={t("Разделы")}>
             <div className="brand">
-              <span className="x-mark" aria-hidden="true">X</span>
-              <span className="li" aria-hidden="true">in</span>
-              <span className="wm"><b>TRAIEX</b> · LinkedIn OS</span>
-              <small>{t("агенты ведут LinkedIn вашей команды")}</small>
+              <span className="orbit-mark" aria-hidden="true"><i /></span>
+              <span className="wm"><b>Orbita</b></span>
+              <span className="nets" aria-hidden="true"><i className="net-badge li">in</i><i className="net-badge x">X</i></span>
+              <small>{t("агенты ведут соцсети вашей команды")}</small>
             </div>
             {nav.map(([p, l, n]) => <a key={p} href={`#${p}`} aria-current={active(p) ? "page" : undefined}>{t(l)}{n ? <span className="count num">{n}</span> : null}</a>)}
             <div className="who">

@@ -399,3 +399,12 @@ a { color: var(--lime); }
 .net-badge { display: inline-flex; width: 26px; height: 26px; align-items: center; justify-content: center; border-radius: 6px; font-size: 13px; font-weight: 800; vertical-align: middle; }
 .net-badge.li { background: #0a66c2; color: #fff; }
 .net-badge.x { background: #0a0c0a; color: #fff; border: 1px solid var(--line-2); }
+.net-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.net-switch .tabs { margin: 0; border-bottom: 0; }
+.add-x { display: inline-flex; align-items: center; gap: 6px; }
+.brand .orbit-mark { position: relative; width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--lime); display: inline-flex; }
+.brand .orbit-mark i { position: absolute; top: -3px; left: 50%; width: 6px; height: 6px; border-radius: 50%; background: var(--lime); transform: translateX(-50%); box-shadow: 0 0 8px var(--lime); }
+.brand .wm { font-weight: 800; letter-spacing: .06em; font-size: 17px; }
+.brand .wm b { color: var(--lime); font-weight: 800; }
+.brand .nets { display: inline-flex; gap: 4px; }
+.brand .nets .net-badge { width: 18px; height: 18px; font-size: 10px; font-style: normal; }

@@ -87,7 +87,7 @@ describe("онбординг сотрудника: роль, интервью, �
     const a = await accOf("Omar Haddad");
     const leader = await env.ctx("leader");
     await expect(agent.setRole(leader, a.id, { role_key: "talent" })).rejects.toThrow();
-    const me = await agent.myAgent(omar, env.db);
+    const me = await agent.myAgent(await ctxOf("omar.h@northwind.example"), env.db); // свежий контекст: членство добавилось
     expect(me.accounts[0].agent.onboarding_step).toBe("role");
     await agent.setRole(omar, a.id, { role_key: "talent" });
     await expect(agent.saveInterview(omar, a.id, { answers: { now: "HR", win: "short" }, topics: ["hiring"] })).rejects.toThrow();
@@ -511,6 +511,25 @@ describe("X (Twitter): адаптер и публикация через авт�
     const r = await agent.connectX(raj, env.db, env.secrets, acc.id);
     expect(r).toMatchObject({ connected: true });
     expect((await env.db.query("SELECT mode FROM capability_snapshots WHERE account_id = $1 AND operation = 'publish_post_x'", [acc.id])).rows[0].mode).toBe("api");
+  });
+  it("addNetwork создаёт X-аккаунт, переносит паспорт и ставит на оплату; повтор запрещён", async () => {
+    const omar = await ctxOf("omar.h@northwind.example");
+    const omarAcc = await accOf("Omar Haddad");
+    // Omar проходит онбординг до подтверждения паспорта.
+    await agent.setRole(omar, omarAcc.id, { role_key: "talent" });
+    const iv = await agent.saveInterview(omar, omarAcc.id, { answers: { now: "I lead talent acquisition for engineering teams across three countries.", win: "We halved time to hire for senior engineers by rewriting job descriptions with the teams." }, topics: ["hiring"], language: "en" });
+    await agent.confirmPassport(omar, env.db, omarAcc.id, { expected_hash: iv.passport_hash });
+    const r = await agent.addNetwork(omar, env.db, { network: "x" });
+    expect(r.passport_ready).toBe(true);
+    const x = (await env.db.query("SELECT network, onboarding_step, passport_confirmed_at FROM personal_agents g JOIN managed_accounts a ON a.id = g.account_id WHERE g.account_id = $1", [r.account_id])).rows[0];
+    expect(x.network).toBe("x");
+    expect(x.onboarding_step).toBe("payment");
+    expect(x.passport_confirmed_at).not.toBeNull();
+    expect((await env.db.query("SELECT count(*)::int n FROM verified_claims WHERE account_id = $1", [r.account_id])).rows[0].n).toBeGreaterThan(0);
+    // В кабинете появляется второй аккаунт.
+    const me = await agent.myAgent(await ctxOf("omar.h@northwind.example"), env.db); // свежий контекст: членство добавилось
+    expect(me.accounts.some((a) => a.network === "x")).toBe(true);
+    await expect(agent.addNetwork(await ctxOf("omar.h@northwind.example"), env.db, { network: "x" })).rejects.toThrow(/уже есть/);
   });
   it("без адаптера X publishXDue ничего не делает", async () => {
     const r = await publishXDue({ db: env.db }, new Date());

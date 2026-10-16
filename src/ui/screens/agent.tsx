@@ -14,6 +14,13 @@ export function MediaImg({ id, alt, className }: { id: string; alt: string; clas
   return s.data ? <img src={s.data.url} alt={alt} className={className} /> : <div className={`img-ph ${className ?? ""}`} aria-label={alt} />;
 }
 
+function AddX({ reload, onAdded }: { reload: () => void; onAdded: () => void }) {
+  const { busy, run } = useAction();
+  return <button className="btn ghost small add-x" disabled={busy} onClick={() => run(async () => { await api("/api/me/agent/add-network", { body: { network: "x" } }); }, "Аккаунт X добавлен", onAdded)}>
+    <span className="net-badge x" style={{ width: 16, height: 16, fontSize: 9 }}>X</span> {t("Добавить аккаунт X")}
+  </button>;
+}
+
 function Stepper({ step }: { step: number }) {
   return (
     <ol className="stepper" aria-label={t("Шаги подключения")}>
@@ -30,11 +37,15 @@ export function MyAgentPage() {
     <Loadable s={s}>{(d) => {
       const x = d.accounts[Math.min(acc, d.accounts.length - 1)] ?? d.accounts[0];
       if (!x) return <div className="notice info">{t("Личный агент работает для личных аккаунтов сотрудников.")}</div>;
-      const switcher = d.accounts.length > 1 ? (
-        <div className="tabs" role="tablist">{d.accounts.map((a: any, i: number) => (
-          <button key={a.account.id} role="tab" aria-selected={i === acc} className={i === acc ? "on" : ""} onClick={() => setAcc(i)}>
-            <span className={`net-badge ${a.network === "x" ? "x" : "li"}`} style={{ width: 18, height: 18, fontSize: 10 }}>{a.network === "x" ? "X" : "in"}</span> {a.account.display_name}
-          </button>))}</div>) : null;
+      const hasX = d.accounts.some((a: any) => a.network === "x");
+      const switcher = (d.accounts.length > 1 || !hasX) ? (
+        <div className="net-switch">
+          <div className="tabs" role="tablist">{d.accounts.map((a: any, i: number) => (
+            <button key={a.account.id} role="tab" aria-selected={i === acc} className={i === acc ? "on" : ""} onClick={() => setAcc(i)}>
+              <span className={`net-badge ${a.network === "x" ? "x" : "li"}`} style={{ width: 18, height: 18, fontSize: 10 }}>{a.network === "x" ? "X" : "in"}</span> {a.account.display_name}
+            </button>))}</div>
+          {!hasX && <AddX reload={s.reload} onAdded={() => { setAcc(d.accounts.length); s.reload(); }} />}
+        </div>) : null;
       const server: Record<string, number> = { role: 1, interview: x.linkedin.connected ? 3 : 2, passport: 4, photos: 5, autopilot: 5, payment: 6, done: 7 };
       const step = local ?? server[x.agent.onboarding_step] ?? 0;
       if (x.agent.onboarding_step === "done" && local == null) return <>{switcher}<AgentHome x={x} cat={d.catalog} reload={s.reload} /></>;
