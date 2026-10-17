@@ -370,12 +370,24 @@ export function RenewPage() {
 /* ---------- Лиды ---------- */
 export function OutreachPage() {
   const me = useApi<any>("/api/me/agent");
-  const accountId = me.data?.accounts?.[0]?.account?.id;
-  const s = useApi<any>(accountId ? `/api/me/outreach/${accountId}` : null, [accountId]);
+  const accounts: any[] = me.data?.accounts ?? [];
+  const [acc, setAcc] = useState(0);
+  const chosen = accounts[Math.min(acc, Math.max(0, accounts.length - 1))];
+  const accountId = chosen?.account?.id;
+  const isX = chosen?.network === "x";
+  const switcher = accounts.length > 1 ? (
+    <div className="net-switch" role="group" aria-label={t("Аккаунты")}>
+      {accounts.map((a: any, i: number) => (
+        <button key={a.account.id} className={`btn ghost small ${i === acc ? "on" : ""}`} aria-pressed={i === acc} onClick={() => setAcc(i)}>
+          <span className={`net-badge ${a.network === "x" ? "x" : "li"}`} style={{ width: 16, height: 16, fontSize: 9 }}>{a.network === "x" ? "X" : "in"}</span> {a.account.display_name}
+        </button>))}
+    </div>) : null;
+  const s = useApi<any>(accountId && !isX ? `/api/me/outreach/${accountId}` : null, [accountId, isX]);
   const { busy, run } = useAction();
   const [csv, setCsv] = useState("");
+  if (isX) return <><div className="spread"><h1>{t("Взаимодействия в X")}</h1>{switcher}</div><XEngage accountId={accountId} /></>;
   return (<Loadable s={s}>{(d) => (<>
-    <h1>{t("Лиды и сообщения")}</h1>
+    <div className="spread"><h1>{t("Лиды и сообщения")}</h1>{switcher}</div>
     <p className="lede">{t("Агент готовит приглашения и сообщения по вашему списку лидов. Вы открываете профиль, вставляете текст и отправляете сами: так LinkedIn видит живого человека.")}</p>
     <div className="vitals">
       <div className="vital"><b className="num">{d.sent_this_week.invite ?? 0}/{d.limits.invite}</b><span>{t("приглашений за неделю")}</span></div>
@@ -397,6 +409,41 @@ export function OutreachPage() {
       <p className="small muted">{t("CSV из Sales Navigator или таблицы: имя, должность, компания, ссылка на профиль LinkedIn.")}</p>
       <textarea rows={5} value={csv} onChange={(e) => setCsv(e.target.value)} placeholder="First Name,Last Name,Title,Company,LinkedIn URL" />
       <div className="actions"><button className="btn" disabled={busy || csv.length < 10} onClick={() => run(() => api(`/api/me/outreach/${accountId}/import`, { body: { csv, kind: "invite", source: "sales_navigator_export" } }), "Лиды загружены", () => { setCsv(""); s.reload(); })}>{t("Загрузить")}</button></div>
+    </section>
+  </>)}</Loadable>);
+}
+
+function XEngage({ accountId }: { accountId: string }) {
+  const s = useApi<any>(accountId ? `/api/me/agent/${accountId}/x-engagements` : null, [accountId]);
+  const { busy, run } = useAction();
+  const [refs, setRefs] = useState("");
+  const [kind, setKind] = useState<"reply" | "like">("reply");
+  return (<Loadable s={s}>{(d) => (<>
+    <p className="lede">{t("Агент готовит ответы на выбранные твиты. Вы отправляете ответ или ставите лайк одним касанием: действие идёт через официальный X API от вашего имени.")}</p>
+    <div className="vitals">
+      <div className="vital"><b className="num">{d.sent_this_week.reply ?? 0}/{d.limits.reply}</b><span>{t("ответов за неделю")}</span></div>
+      <div className="vital"><b className="num">{d.sent_this_week.like ?? 0}/{d.limits.like}</b><span>{t("лайков за неделю")}</span></div>
+    </div>
+    <div className="post-list">{d.items.filter((i: any) => i.status !== "skipped").map((i: any) => (
+      <article key={i.id} className="post-card">
+        <header><b>{i.target_author ? "@" + i.target_author : t("твит")}</b><span className="pill">{i.kind === "reply" ? t("ответ") : t("лайк")}</span>{i.status === "sent" && <span className="pill ok">{t("отправлено")}</span>}</header>
+        {i.kind === "reply" && i.draft && <p className="post-text">{i.draft}</p>}
+        <footer>
+          {i.target_url && <a className="btn small" href={i.target_url} target="_blank" rel="noopener">{t("Открыть твит")}</a>}
+          {i.status !== "sent" && <>
+            <button className="btn primary small" disabled={busy} onClick={() => run(() => api(`/api/x-engagements/${i.id}/action`, { body: { action: "sent" } }), "Отправлено", s.reload)}>{i.kind === "reply" ? t("Отправить ответ") : t("Поставить лайк")}</button>
+            <button className="btn ghost small" disabled={busy} onClick={() => run(() => api(`/api/x-engagements/${i.id}/action`, { body: { action: "skip" } }), "Пропущено", s.reload)}>{t("Пропустить")}</button>
+          </>}
+        </footer>
+      </article>))}</div>
+    <section className="panel"><h3>{t("Добавить цели")}</h3>
+      <p className="small muted">{t("Ссылки на твиты, по одной в строке. Для ответов агент напишет черновик в вашем голосе, для лайков выберите вид «лайк».")}</p>
+      <div className="lang" role="group">
+        <button className={`btn ghost small ${kind === "reply" ? "on" : ""}`} aria-pressed={kind === "reply"} onClick={() => setKind("reply")}>{t("Ответы")}</button>
+        <button className={`btn ghost small ${kind === "like" ? "on" : ""}`} aria-pressed={kind === "like"} onClick={() => setKind("like")}>{t("Лайки")}</button>
+      </div>
+      <textarea rows={4} value={refs} onChange={(e) => setRefs(e.target.value)} placeholder="https://x.com/user/status/1790000000000000001" />
+      <div className="actions"><button className="btn" disabled={busy || refs.length < 10} onClick={() => run(() => api(`/api/me/agent/${accountId}/x-targets`, { body: { refs, kind } }), "Цели добавлены", () => { setRefs(""); s.reload(); })}>{t("Добавить")}</button></div>
     </section>
   </>)}</Loadable>);
 }

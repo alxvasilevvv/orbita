@@ -15,7 +15,7 @@ import { seedDemo } from "../db/seed";
 import { buildApp } from "./app";
 import { createRuntime } from "../runtime";
 
-let ready: Promise<ReturnType<typeof buildApp>> | null = null;
+let ready: Promise<any> | null = null;
 function getApp() {
   if (!ready) {
     ready = (async () => {

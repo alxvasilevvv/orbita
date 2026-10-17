@@ -28,8 +28,10 @@ import * as missions from "../services/missions";
 import * as agent from "../services/agent";
 import * as billing from "../services/billing";
 import * as outreach from "../services/outreach";
+import * as xengage from "../services/x_engage";
 import * as chat from "../services/chat";
 import type { TelegramClient } from "../integrations/telegram";
+import type { XSocialAdapter } from "../integrations/x/adapter";
 import { CAPABILITY_CATALOG } from "../core/capabilities";
 import { STRATEGY_TEMPLATES } from "../core/templates";
 import { dailyRequestBudget } from "../core/heuristics";
@@ -61,6 +63,7 @@ const EMPLOYEE_ROUTES = new Set([
   "GET /api/me/outreach/:accountId", "POST /api/me/outreach/:accountId/import", "POST /api/outreach/:id/mark",
   "GET /api/me/agent/:accountId/chat", "POST /api/me/agent/:accountId/chat", "GET /api/me/agent/:accountId/plan",
   "POST /api/me/agent/:accountId/x/connect", "POST /api/me/agent/add-network",
+  "GET /api/me/agent/:accountId/x-engagements", "POST /api/me/agent/:accountId/x-targets", "POST /api/x-engagements/:id/action",
 ]);
 const CLIENT_ADMIN_ROUTES = new Set([
   "GET /api/me", "PATCH /api/me", "GET /api/meta", "GET /api/notifications", "POST /api/notifications/read",
@@ -90,6 +93,7 @@ export interface AppDeps {
   agentAi?: AiProvider;
   telegram?: TelegramClient;
   payments?: billing.PaymentProvider;
+  xAdapter?: XSocialAdapter;
 }
 
 /** Простой лимитер запросов на пользователя/IP: защита от случайных циклов в клиентах. Основная защита: WAF. */
@@ -406,6 +410,9 @@ export function buildApp(deps: AppDeps) {
   app.get("/api/me/agent/:accountId/plan", h<{ accountId: string }>(async (ctx, req) => chat.contentPlan(ctx, req.params.accountId)));
   app.post("/api/me/agent/:accountId/x/connect", h<{ accountId: string }>(async (ctx, req) => agent.connectX(ctx, deps.db, deps.secrets as any, req.params.accountId)));
   app.post("/api/me/agent/add-network", h(async (ctx, req) => agent.addNetwork(ctx, deps.db, req.body)));
+  app.get("/api/me/agent/:accountId/x-engagements", h<{ accountId: string }>(async (ctx, req) => xengage.myXEngagements(ctx, req.params.accountId)));
+  app.post("/api/me/agent/:accountId/x-targets", h<{ accountId: string }>(async (ctx, req) => xengage.importXTargets(ctx, req.params.accountId, req.body)));
+  app.post("/api/x-engagements/:id/action", h<{ id: string }>(async (ctx, req) => xengage.markXEngagement(ctx, { xAdapter: deps.xAdapter!, secrets: deps.secrets as any }, req.params.id, req.body)));
   app.post("/api/me/outreach/:accountId/import", h<{ accountId: string }>(async (ctx, req) => outreach.importLeads(ctx, req.params.accountId, req.body)));
   app.post("/api/outreach/:id/mark", h<{ id: string }>(async (ctx, req) => outreach.markOutreach(ctx, req.params.id, req.body)));
   // Вебхук Stripe: подпись проверяется по сырому телу запроса.

@@ -10,6 +10,7 @@ import { autopilotTick } from "./agents/autopilot";
 import { xAdapterFromEnv, type XSocialAdapter } from "./integrations/x/adapter";
 import { billingTick, paymentsFromEnv, type PaymentProvider } from "./services/billing";
 import { draftOutreach } from "./services/outreach";
+import { draftXEngagements } from "./services/x_engage";
 import type { AiProvider } from "./ai/guard";
 import { DemoLinkedInAdapter, LinkedInHttpAdapter, type SocialAdapter } from "./integrations/linkedin/adapter";
 import type { WorkerContext } from "./worker/tick";
@@ -67,6 +68,7 @@ export function workerContext(rt: Runtime, workerId: string, env = process.env):
         xAdapter: rt.xAdapter, secrets: rt.secrets }, now),
       (now) => billingTick(rt.db, now),
       (now) => draftOutreach(rt.db, now),
+      (now) => draftXEngagements(rt.db, now),
     ],
   };
 }

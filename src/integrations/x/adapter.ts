@@ -7,11 +7,14 @@ import { IntegrationError } from "../linkedin/adapter";
  */
 export interface XPublishRequest { authorId: string; accessToken: string; idempotencyKey: string; text: string; replyToId?: string | null }
 export interface XPublishResult { externalId: string; url: string | null }
+export interface XLikeRequest { userId: string; accessToken: string; tweetId: string }
 export interface XSocialAdapter {
   readonly provider: string;
   readonly isDemo: boolean;
-  /** Публикует один твит. Для треда вызывается по цепочке через replyToId. */
+  /** Публикует один твит. Для треда вызывается по цепочке через replyToId. Ответ на чужой твит — тот же вызов с replyToId. */
   publishTweet(req: XPublishRequest): Promise<XPublishResult>;
+  /** Лайк твита от имени пользователя (POST /2/users/:id/likes). */
+  likeTweet(req: XLikeRequest): Promise<{ liked: boolean }>;
   /** Личность токена: id и username (users/me). */
   me(req: { accessToken: string }): Promise<{ id: string; username: string }>;
 }
@@ -60,6 +63,10 @@ export class XHttpAdapter implements XSocialAdapter {
     if (!id) throw new IntegrationError("unknown_outcome", "no_id", "X не вернул идентификатор твита");
     return { externalId: id, url: `https://x.com/i/web/status/${id}` };
   }
+  async likeTweet(req: XLikeRequest): Promise<{ liked: boolean }> {
+    const data: any = await this.call(`/2/users/${encodeURIComponent(req.userId)}/likes`, req.accessToken, { tweet_id: req.tweetId });
+    return { liked: data?.data?.liked !== false };
+  }
   async me(req: { accessToken: string }) {
     const data: any = await this.call("/2/users/me", req.accessToken, undefined, "GET");
     return { id: data?.data?.id ?? "", username: data?.data?.username ?? "" };
@@ -74,6 +81,7 @@ export class DemoXAdapter implements XSocialAdapter {
     const id = `demo${Math.abs([...req.idempotencyKey].reduce((a, c) => Math.imul(a, 31) + c.charCodeAt(0), 7)) % 1e15}`;
     return { externalId: id, url: `https://x.com/i/web/status/${id}` };
   }
+  async likeTweet() { return { liked: true }; }
   async me() { return { id: "demo-x-user", username: "demo" }; }
 }
 
