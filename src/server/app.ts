@@ -161,7 +161,8 @@ export function buildApp(deps: AppDeps) {
     };
 
   // Статика UI
-  const asset = (file: string, type: string) => async (_r: FastifyRequest, reply: FastifyReply) => reply.type(type).header("Cache-Control", "no-cache").send(await readFile(join(here, "../../public", file)));
+  const publicDir = process.env.ORBITA_PUBLIC_DIR || join(here, "../../public");
+  const asset = (file: string, type: string) => async (_r: FastifyRequest, reply: FastifyReply) => reply.type(type).header("Cache-Control", "no-cache").send(await readFile(join(publicDir, file)));
   app.get("/", asset("index.html", "text/html; charset=utf-8"));
   app.get("/app.js", asset("app.js", "application/javascript; charset=utf-8"));
   app.get("/app.css", asset("app.css", "text/css; charset=utf-8"));
