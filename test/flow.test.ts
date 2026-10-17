@@ -174,6 +174,34 @@ describe("публикация", () => {
     expect((await pub.runDueJobs(worker()))[0].outcome).toBe("unknown_resolved_published");
   });
 
+  it("застрявший publication_unknown разрешается фоновым шагом при доступе на чтение", async () => {
+    const { a1, itemId } = await approvedItem();
+    await connectApi(a1.id);
+    env.adapter.failures.set("urn:li:person:demo1", "lose_response");
+    const realFind = env.adapter.findPublication.bind(env.adapter);
+    env.adapter.findPublication = (async () => null) as any; // немедленная проверка при публикации недоступна
+    await content.schedule(await env.ctx("manager"), itemId, { local_time: localIn("America/New_York", new Date(Date.now() + 60_000)) });
+    await env.db.query("UPDATE publication_jobs SET run_at = now() - interval '1 minute'");
+    expect((await pub.runDueJobs(worker()))[0].outcome).toBe("unknown");
+    expect((await env.db.query("SELECT state FROM content_items WHERE id = $1", [itemId])).rows[0].state).toBe("publication_unknown");
+
+    // Без доступа на чтение публикаций фоновый шаг оставляет исход человеку.
+    let r = await pub.resolveUnknownDue(worker());
+    expect(r.resolved).toBe(0);
+    expect((await env.db.query("SELECT state FROM content_items WHERE id = $1", [itemId])).rows[0].state).toBe("publication_unknown");
+
+    // Появился доступ на чтение (read_own_posts = api), индексация догнала: пост находится по ключу идемпотентности.
+    const clientId = (await env.db.query("SELECT client_id FROM managed_accounts WHERE id = $1", [a1.id])).rows[0].client_id;
+    await env.db.query("INSERT INTO capability_snapshots(client_id, account_id, operation, mode, source) VALUES ($1,$2,'read_own_posts','api','test')", [clientId, a1.id]);
+    env.adapter.findPublication = realFind;
+    await env.db.query("UPDATE content_items SET unknown_checked_at = NULL WHERE id = $1", [itemId]);
+    r = await pub.resolveUnknownDue(worker());
+    expect(r.resolved).toBe(1);
+    expect((await env.db.query("SELECT state FROM content_items WHERE id = $1", [itemId])).rows[0].state).toBe("published");
+    expect((await env.db.query("SELECT evidence_type FROM external_publications WHERE content_item_id = $1", [itemId])).rows[0].evidence_type).toBe("api_confirmed");
+    expect((await env.db.query("SELECT count(*)::int n FROM tasks WHERE type = 'resolve_unknown' AND status NOT IN ('done','cancelled')")).rows[0].n).toBe(0);
+  });
+
   it("отзыв согласия блокирует неотправленные действия (критерий 7)", async () => {
     const { a1, itemId } = await approvedItem();
     await connectApi(a1.id);

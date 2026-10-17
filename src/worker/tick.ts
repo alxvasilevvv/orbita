@@ -1,7 +1,7 @@
 import type { Db } from "../db/db";
 import type { SocialAdapter } from "../integrations/linkedin/adapter";
 import type { SecretStore } from "../services/publishing";
-import { runDueJobs } from "../services/publishing";
+import { runDueJobs, resolveUnknownDue } from "../services/publishing";
 import { processOutbox, runScans } from "../services/events";
 import { deliverPending, type Mailer } from "../services/notify";
 import type { Storage } from "../services/storage";
@@ -31,6 +31,7 @@ export async function workerTick(w: WorkerContext, now = new Date()) {
   if (now.getTime() - lastScan > 60_000) {
     lastScan = now.getTime();
     await step("scans", () => runScans(w.db, now));
+    await step("resolve_unknown", () => resolveUnknownDue({ db: w.db, adapter: w.adapter, secrets: w.secrets }, now));
     for (const [i, t] of (w.extraTasks ?? []).entries()) await step(`task_${i}`, () => t(now));
   }
   await step("exports", () => processExports(w.db, w.storage));

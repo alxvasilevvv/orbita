@@ -324,6 +324,55 @@ export async function resolveUnknown(ctx: Ctx, itemId: string, input: unknown) {
   });
 }
 
+/**
+ * Автоматическое разрешение publication_unknown на сервере. Срабатывает только при наличии доступа
+ * на чтение публикаций (read_own_posts = api, то есть одобренный Community Management API и выданный
+ * r_member_social). Через adapter.findPublication ищем пост по ключу идемпотентности: если он найден,
+ * исход был успешным и материал помечается опубликованным (evidence api_confirmed). Отрицательный и
+ * неопределённый ответы оставляем человеку: findPublication может не найти пост из-за задержки индексации,
+ * а автоматический откат создал бы риск повторной публикации. Частота проверок на материал ограничена часом.
+ */
+export interface ResolveUnknownDeps { db: Db; adapter: SocialAdapter; secrets: SecretStore }
+export async function resolveUnknownDue(deps: ResolveUnknownDeps, now = new Date(), limit = 25) {
+  const since = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  const rows = (await deps.db.query(
+    `SELECT ci.id, ci.account_id, ci.client_id, c.agency_id, a.linkedin_urn AS author_urn,
+            (SELECT secret_ref FROM oauth_connections o WHERE o.account_id = a.id AND o.status IN ('active','expiring') ORDER BY updated_at DESC LIMIT 1) AS secret_ref,
+            (SELECT idempotency_key FROM publication_jobs pj WHERE pj.content_item_id = ci.id ORDER BY created_at DESC LIMIT 1) AS idemp,
+            (SELECT left(cv.body, 40) FROM content_versions cv WHERE cv.id = ci.current_version_id) AS body_prefix,
+            (SELECT mode FROM capability_snapshots cs WHERE cs.account_id = a.id AND cs.operation = 'read_own_posts' ORDER BY checked_at DESC, id DESC LIMIT 1) AS read_mode
+       FROM content_items ci JOIN managed_accounts a ON a.id = ci.account_id JOIN clients c ON c.id = ci.client_id
+      WHERE ci.state = 'publication_unknown' AND coalesce(a.network, 'linkedin') = 'linkedin'
+        AND (ci.unknown_checked_at IS NULL OR ci.unknown_checked_at < $1)
+      ORDER BY ci.unknown_checked_at NULLS FIRST LIMIT $2`,
+    [since, limit])).rows;
+  let checked = 0, resolved = 0, skipped = 0;
+  for (const r of rows) {
+    await deps.db.query("UPDATE content_items SET unknown_checked_at = $2 WHERE id = $1", [r.id, now.toISOString()]);
+    if (r.read_mode !== "api" || !r.secret_ref || !r.author_urn || !r.idemp) { skipped++; continue; }
+    const token = await deps.secrets.get(r.secret_ref);
+    if (!token) { skipped++; continue; }
+    let found: Awaited<ReturnType<SocialAdapter["findPublication"]>>;
+    try {
+      found = await deps.adapter.findPublication({ authorUrn: r.author_urn, accessToken: token, idempotencyKey: r.idemp, bodyPrefix: r.body_prefix ?? "" });
+    } catch { skipped++; continue; }
+    checked++;
+    if (found && found !== "not_found") {
+      await deps.db.tx(async (q) => {
+        await systemSetContent(q, { content_item_id: r.id, client_id: r.client_id, account_id: r.account_id, id: null }, r.agency_id, "published", "", { auto: true });
+        await q.query(`INSERT INTO external_publications(client_id, account_id, content_item_id, external_id, url, evidence_type, published_at)
+                       VALUES ($1,$2,$3,$4,$5,'api_confirmed', now()) ON CONFLICT (content_item_id) DO UPDATE SET external_id = EXCLUDED.external_id, url = EXCLUDED.url, evidence_type = 'api_confirmed'`,
+          [r.client_id, r.account_id, r.id, found.externalId, found.url]);
+        await q.query("UPDATE publication_jobs SET status = 'succeeded', updated_at = now() WHERE content_item_id = $1 AND status IN ('unknown','failed','dead')", [r.id]);
+        await q.query("UPDATE action_records SET status = 'succeeded', evidence_type = 'api_confirmed' WHERE target = $1 AND status = 'unknown'", [r.id]);
+        await q.query("UPDATE tasks SET status = 'done', completed_at = now() WHERE (source_ref IN (SELECT 'resolve_unknown:' || id FROM publication_jobs WHERE content_item_id = $1) OR source_ref IN (SELECT 'publish_failed:' || id FROM publication_jobs WHERE content_item_id = $1)) AND status IN ('open','in_progress','blocked')", [r.id]);
+      });
+      resolved++;
+    }
+  }
+  return { candidates: rows.length, checked, resolved, skipped };
+}
+
 /** Аварийная остановка: аккаунт, клиент или всё агентство. */
 export async function pausePublishing(ctx: Ctx, input: unknown) {
   const d = z.object({ scope: z.enum(["account", "client", "agency"]), id: z.string().uuid().optional(), paused: z.boolean() }).parse(input);
