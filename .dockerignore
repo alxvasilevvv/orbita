@@ -1,0 +1,7 @@
+node_modules
+.git
+data
+e2e/shots
+test
+*.log
+api
