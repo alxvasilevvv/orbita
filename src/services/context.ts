@@ -24,6 +24,11 @@ export async function loadActor(db: Queryable, userId: string): Promise<Actor | 
   const memberships: Membership[] = typeof u.memberships === "string" ? JSON.parse(u.memberships) : u.memberships;
   const wide = agencyWide(memberships);
   // Клиенты целиком: все клиенты агентства для ролей уровня агентства и роли на клиента (кроме аудитора).
+  // ПРИМЕЧАНИЕ (defense-in-depth, к доработке с миграцией apply_rls): client_admin здесь получает full-область
+  // клиента, поэтому на уровне БД видит и строки личных аккаунтов сотрудников. На уровне сервисов это закрыто
+  // (accountScope отклоняет личные аккаунты для client_admin), а кабинет руководителя читает агрегаты через
+  // системную БД. Полная изоляция в RLS требует правки apply_rls (разрешить client-уровневые строки в таблицах
+  // с account_id по partial-клиентам) и проверки всех потоков руководителя — делается отдельно.
   const full = new Set<string>([...(wide ? u.agency_clients : []), ...memberships.filter((m) => m.scope_client_id && !m.scope_account_id && m.role !== "auditor").map((m) => m.scope_client_id as string)]);
   // Роль на аккаунт открывает только этот аккаунт и строки уровня его клиента, но не соседние аккаунты.
   const accountIds = [...new Set(memberships.filter((m) => m.scope_account_id && m.role !== "auditor").map((m) => m.scope_account_id as string))];
