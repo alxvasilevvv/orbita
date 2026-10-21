@@ -41,8 +41,10 @@ function App() {
   const [toast, setToast] = useState<{ msg: string; err?: boolean } | null>(null);
   const [uid, setUid] = useState(currentUser);
   const [locale, setLoc] = useState<Locale>(getLocale());
-  const users = useApi<any[]>("/api/dev/users");
-  const me = useApi<Me>(uid ? "/api/me" : null, [uid]);
+  const meta = useApi<any>("/api/meta");
+  const dev = meta.data ? !!meta.data.auth?.dev : true; // пока meta грузится, считаем демо, чтобы не мигать экраном входа
+  const users = useApi<any[]>(dev ? "/api/dev/users" : null, [dev]);
+  const me = useApi<Me>((uid || (!!meta.data && !dev)) ? "/api/me" : null, [uid, dev]);
   const approvals = useApi<any[]>(uid && me.data?.internal ? "/api/approvals" : null, [uid, me.data?.id]);
   const show = useCallback((msg: string, err?: boolean) => { setToast({ msg, err }); setTimeout(() => setToast(null), 5000); }, []);
   const switchUser = (id: string) => { setCurrentUser(id); setUid(id); location.hash = "/"; };
@@ -77,7 +79,9 @@ function App() {
   const employeePage = () => route.startsWith("/me/actions") ? <MyActions /> : route.startsWith("/me/outreach") ? <OutreachPage /> : route.startsWith("/me/pay") ? <RenewPage /> : <MyAgentPage />;
   if (inv) page = <InvitePage token={inv[1]} onAccepted={(id) => switchUser(id)} />;
   else if (pay && m) page = <DemoPayPage id={pay[1]} />;
-  else if (!m) page = me.error ? <div className="notice info">{t("Выберите пользователя внизу слева, чтобы войти.")}</div> : <p className="muted">{t("Загрузка…")}</p>;
+  else if (!m) page = (!dev && meta.data?.auth?.google)
+    ? <div className="login-gate"><span className="orbit-mark" aria-hidden="true"><i /></span><h1>Orbita</h1><p className="muted">{t("Войдите, чтобы продолжить")}</p><a className="btn primary" href="/auth/google/start">{t("Войти через Google")}</a></div>
+    : me.error ? <div className="notice info">{t("Выберите пользователя внизу слева, чтобы войти.")}</div> : <p className="muted">{t("Загрузка…")}</p>;
   else if (m.auditor_only) page = <Audit />;
   else if (m.company_admin) page = mis ? <MissionPage id={mis[1]} /> : c ? <ContentPage id={c[1]} /> : rep ? <ReportPage id={rep[1]} /> : route.startsWith("/me") ? employeePage() : <CompanyPage id={comp?.[1] ?? m.company_ids![0]} />;
   else if (m.personal_agent && !m.internal) page = c ? <ContentPage id={c[1]} /> : employeePage();
@@ -114,17 +118,19 @@ function App() {
             </div>
             {nav.map(([p, l, n]) => <a key={p} href={`#${p}`} aria-current={active(p) ? "page" : undefined}>{t(l)}{n ? <span className="count num">{n}</span> : null}</a>)}
             <div className="who">
-              <label htmlFor="who" className="muted small">{t("Вы вошли как (демо-вход)")}</label>
-              <select id="who" value={uid ?? ""} onChange={(e) => switchUser(e.target.value)}>
-                {users.data?.map((u) => <option key={u.id} value={u.id}>{u.display_name}</option>)}
-              </select>
+              {dev && <>
+                <label htmlFor="who" className="muted small">{t("Вы вошли как (демо-вход)")}</label>
+                <select id="who" value={uid ?? ""} onChange={(e) => switchUser(e.target.value)}>
+                  {users.data?.map((u) => <option key={u.id} value={u.id}>{u.display_name}</option>)}
+                </select>
+              </>}
               <div className="lang" role="group" aria-label={t("Язык интерфейса")}>
                 {(["ru", "en"] as Locale[]).map((l) => <button key={l} className={`btn ghost small ${locale === l ? "on" : ""}`} aria-pressed={locale === l} onClick={() => switchLocale(l)}>{l.toUpperCase()}</button>)}
               </div>
             </div>
           </nav>
           <div className="main-col">
-            {m && <header className="top"><span className="muted small">{m.display_name}</span><Bell /></header>}
+            {m && <header className="top"><span className="muted small">{m.display_name}</span>{!dev && <button className="btn ghost small" onClick={async () => { await api("/auth/logout", { method: "POST" }).catch(() => {}); setCurrentUser(""); location.href = "/auth/login"; }}>{t("Выйти")}</button>}<Bell /></header>}
             <main key={uid ?? "anon"}>{page}</main>
           </div>
         </div>

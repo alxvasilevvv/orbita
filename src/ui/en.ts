@@ -1262,4 +1262,7 @@ export const EN: Record<string, string> = {
   "Лайки": "Likes",
   "Добавить": "Add",
   "Цели добавлены": "Targets added",
+  "Войдите, чтобы продолжить": "Sign in to continue",
+  "Войти через Google": "Sign in with Google",
+  "Выйти": "Sign out",
 };

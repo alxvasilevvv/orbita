@@ -32,6 +32,7 @@ import * as xengage from "../services/x_engage";
 import * as chat from "../services/chat";
 import type { TelegramClient } from "../integrations/telegram";
 import type { XSocialAdapter } from "../integrations/x/adapter";
+import * as authn from "../services/auth";
 import { CAPABILITY_CATALOG } from "../core/capabilities";
 import { STRATEGY_TEMPLATES } from "../core/templates";
 import { dailyRequestBudget } from "../core/heuristics";
@@ -149,7 +150,10 @@ export function buildApp(deps: AppDeps) {
    * header: доверенный заголовок от identity-aware proxy с MFA, см. docs/adr/0003.
    */
   async function ctxOf(req: FastifyRequest): Promise<Ctx> {
-    const id = deps.authMode === "dev" ? (req.headers["x-user-id"] as string) : (req.headers["x-authenticated-user-id"] as string);
+    // Приоритет у подписанной куки-сессии (реальный вход через Google). Иначе fallback на заголовки:
+    // dev — x-user-id (только вне production), header — доверенный x-authenticated-user-id от IdP-прокси.
+    const sessionUid = authn.readSession(authn.parseCookies(req.headers.cookie)["orbita_session"]);
+    const id = sessionUid ?? (deps.authMode === "dev" ? (req.headers["x-user-id"] as string) : (req.headers["x-authenticated-user-id"] as string));
     if (!id || !/^[0-9a-f-]{36}$/.test(id)) throw Object.assign(new Error("Требуется вход"), { status: 401 });
     const actor = await loadActor(deps.db, id);
     if (!actor) throw Object.assign(new Error("Пользователь не найден или отключён"), { status: 401 });
@@ -173,6 +177,35 @@ export function buildApp(deps: AppDeps) {
   app.get("/", asset("index.html", "text/html; charset=utf-8"));
   app.get("/app.js", asset("app.js", "application/javascript; charset=utf-8"));
   app.get("/app.css", asset("app.css", "text/css; charset=utf-8"));
+
+  // Реальный вход через Google (OpenID Connect, code flow + PKCE). Активен при GOOGLE_CLIENT_ID/SECRET.
+  const googleRedirect = () => `${process.env.APP_URL ?? ""}/auth/google/callback`;
+  app.get("/auth/login", async (_r, reply) => {
+    const on = authn.googleEnabled();
+    reply.type("text/html; charset=utf-8").send(`<!doctype html><meta charset=utf-8><title>Orbita — вход</title><body style="font-family:ui-sans-serif,system-ui;background:#0a0a0a;color:#eee;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h1 style="font-weight:800">Orbita</h1>${on ? `<a href="/auth/google/start" style="display:inline-block;background:#c6f24e;color:#0a0a0a;font-weight:700;padding:12px 20px;border-radius:999px;text-decoration:none">Войти через Google</a>` : `<p style="opacity:.7">Вход через Google пока не настроен.</p>`}</div></body>`);
+  });
+  app.get("/auth/google/start", async (_r, reply) => {
+    if (!authn.googleEnabled()) return reply.status(404).send("Вход через Google не настроен");
+    const { verifier, challenge } = authn.pkce();
+    const state = randomBytes(16).toString("hex");
+    reply.header("set-cookie", authn.cookie("orbita_oauth", authn.signState({ state, verifier }), { maxAge: 600 }));
+    return reply.redirect(authn.googleAuthUrl({ clientId: process.env.GOOGLE_CLIENT_ID!, redirectUri: googleRedirect(), state, challenge }));
+  });
+  app.get("/auth/google/callback", async (req: FastifyRequest<{ Querystring: { code?: string; state?: string } }>, reply) => {
+    if (!authn.googleEnabled()) return reply.status(404).send();
+    const saved = authn.readState(authn.parseCookies(req.headers.cookie)["orbita_oauth"]);
+    const { code, state } = req.query;
+    reply.header("set-cookie", authn.cookie("orbita_oauth", "", { maxAge: 0 }));
+    if (!saved || !code || !state || saved.state !== state) return reply.status(400).send("Сессия входа недействительна, попробуйте снова");
+    const info = await authn.exchangeGoogleCode({ clientId: process.env.GOOGLE_CLIENT_ID!, clientSecret: process.env.GOOGLE_CLIENT_SECRET!, code, redirectUri: googleRedirect(), verifier: saved.verifier });
+    if (!info || !info.emailVerified) return reply.status(401).send("Google не подтвердил email");
+    const u = (await deps.db.query("SELECT id FROM users WHERE lower(email) = $1 AND is_active", [info.email])).rows[0];
+    if (!u) return reply.redirect("/auth/login?e=not_provisioned");
+    reply.header("set-cookie", authn.cookie("orbita_session", authn.createSession(u.id), { maxAge: 7 * 24 * 3600 }));
+    return reply.redirect("/#/");
+  });
+  app.post("/auth/logout", async (_r, reply) => { reply.header("set-cookie", authn.cookie("orbita_session", "", { maxAge: 0 })); return { ok: true }; });
+
   app.get("/healthz", async () => { await deps.db.query("SELECT 1"); return { ok: true }; });
   app.get("/readyz", async () => {
     const q = (await deps.db.query("SELECT (SELECT count(*)::int FROM publication_jobs WHERE status = 'queued' AND run_at < now() - interval '15 minutes') AS stuck, (SELECT count(*)::int FROM outbox WHERE processed_at IS NULL AND created_at < now() - interval '15 minutes') AS outbox_lag")).rows[0];
@@ -213,6 +246,7 @@ export function buildApp(deps: AppDeps) {
     capability_catalog: CAPABILITY_CATALOG, strategy_templates: STRATEGY_TEMPLATES, approved_products: (process.env.LINKEDIN_APPROVED_PRODUCTS ?? "").split(",").filter(Boolean),
     request_budget: [500, 2000].map((n) => ({ accounts: n, ...dailyRequestBudget({ accounts: n, syncsPerDay: 4, requestsPerSync: 3, publicationsPerDay: Math.round(n * 0.4), requestsPerPublication: 2, interactionsPerDay: n, reserve: 0.3 }) })),
     ai_provider: { name: aiProvider.name, model: aiProvider.model }, media_limits: MEDIA_LIMITS, triggers: wf.TRIGGERS, audit_criteria: onb.AUDIT_CRITERIA, pipelines: eng.PIPELINES, stages: eng.STAGE_RU,
+    auth: { google: authn.googleEnabled(), dev: deps.authMode === "dev" },
   }));
 
   // Обзор, клиенты, аккаунты
