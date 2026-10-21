@@ -122,7 +122,10 @@ export function buildApp(deps: AppDeps) {
   const inviteLimit = rateLimiter(20);
 
   app.addHook("onRequest", async (req, reply) => {
-    if (req.url.startsWith("/api/") && !limit(`${req.headers["x-user-id"] ?? req.headers["x-authenticated-user-id"] ?? req.ip}`)) {
+    // В header-режиме доверяем только заголовку от identity-aware proxy; клиентский x-user-id не даёт
+    // обойти лимит сменой значения. В dev-режиме идентификатор запроса — это и есть x-user-id.
+    const idKey = deps.authMode === "header" ? (req.headers["x-authenticated-user-id"] ?? req.ip) : (req.headers["x-user-id"] ?? req.ip);
+    if (req.url.startsWith("/api/") && !limit(`${idKey}`)) {
       return reply.status(429).send({ error: "rate_limited", message: "Слишком много запросов, повторите через минуту" });
     }
   });

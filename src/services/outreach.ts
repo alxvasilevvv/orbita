@@ -4,7 +4,7 @@ import { accountScope, assertAccountOwner, audit, ConflictError, isAccountOwner,
 import { ForbiddenError } from "../core/permissions";
 import { outreachLimit, STRATEGIES } from "../core/strategy";
 import { weekKey } from "../core/autopilot";
-import { loadSafety } from "../agents/officer";
+import { loadSafety, lockAccount } from "../agents/officer";
 import { subscriptionOf } from "./billing";
 import { checkText } from "../core/safety";
 
@@ -118,16 +118,23 @@ export async function markOutreach(ctx: Ctx, id: string, input: unknown, now = n
     await ctx.db.query("UPDATE outreach_items SET status = 'skipped', updated_at = now() WHERE id = $1", [id]);
     return { status: "skipped" };
   }
-  const s = await loadSafety(ctx.db, it.account_id);
-  if (s.excluded || (s.cooldownUntil && s.cooldownUntil > now)) throw new ValidationError("Аккаунт на охлаждении после сигнала LinkedIn: подождите");
-  const wk = weekKey(now);
-  const sent = (await ctx.db.query("SELECT count(*)::int n FROM outreach_items WHERE account_id = $1 AND kind = $2 AND week_key = $3 AND status = 'sent'", [it.account_id, it.kind, wk])).rows[0].n;
-  if (sent >= outreachLimit(s.level ?? "reputation", it.kind)) throw new ValidationError("Недельный лимит стратегии исчерпан: продолжим на следующей неделе");
+  if (!(await subscriptionOf(ctx.db, it.account_id, now)).active) throw new ValidationError("Нужна активная подписка");
   const text = (d.text ?? it.draft ?? "").trim();
   if (it.kind === "invite" && text.length > 300) throw new ValidationError("Приглашение длиннее 300 символов");
   const tc = checkText(text, "comment", []);
   if (tc.block.includes("template_phrase")) throw new ValidationError("Шаблонная фраза: перепишите своими словами");
-  await ctx.db.query("UPDATE outreach_items SET status = 'sent', draft = $2, week_key = $3, sent_at = now(), updated_at = now() WHERE id = $1", [id, text, wk]);
+  const wk = weekKey(now);
+  // Блокировка аккаунта в транзакции: проверка недельного лимита и отметка «отправлено» атомарны,
+  // два одновременных касания не превысят потолок стратегии.
+  await ctx.db.tx(async (q) => {
+    await lockAccount(q, it.account_id);
+    const s = await loadSafety(q, it.account_id);
+    if (s.excluded || (s.cooldownUntil && s.cooldownUntil > now)) throw new ValidationError("Аккаунт на охлаждении после сигнала LinkedIn: подождите");
+    const sent = (await q.query("SELECT count(*)::int n FROM outreach_items WHERE account_id = $1 AND kind = $2 AND week_key = $3 AND status = 'sent'", [it.account_id, it.kind, wk])).rows[0].n;
+    if (sent >= outreachLimit(s.level ?? "reputation", it.kind)) throw new ValidationError("Недельный лимит стратегии исчерпан: продолжим на следующей неделе");
+    const upd = await q.query("UPDATE outreach_items SET status = 'sent', draft = $2, week_key = $3, sent_at = now(), updated_at = now() WHERE id = $1 AND status IN ('drafted','new') RETURNING id", [id, text, wk]);
+    if (!upd.rows.length) throw new ConflictError("Уже обработано");
+  });
   await audit(ctx.db, ctx, { action: "outreach.sent_manually", entity_type: "outreach_item", entity_id: id, client_id: it.client_id, account_id: it.account_id, details: { kind: it.kind } });
   return { status: "sent" };
 }

@@ -35,7 +35,9 @@ export async function loadActor(db: Queryable, userId: string): Promise<Actor | 
     accountIds,
     partialClientIds,
     internal: memberships.some((m) => !isExternalRole(m.role)),
-    audit: memberships.some((m) => m.role === "auditor" || m.role === "owner"),
+    // Глобальный аудит-доступ только у аудитора уровня агентства (без привязки к клиенту) и владельца.
+    // Аудитор, привязанный к конкретному клиенту, не получает сквозного чтения по всем клиентам (fail-closed).
+    audit: memberships.some((m) => (m.role === "auditor" && !m.scope_client_id) || m.role === "owner"),
   };
   return { id: u.id, agency_id: u.agency_id, display_name: u.display_name, memberships, scope };
 }

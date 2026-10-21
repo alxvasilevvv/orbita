@@ -4,7 +4,7 @@ import { accountScope, assertAccountOwner, ConflictError, isAccountOwner, isInte
 import { ForbiddenError } from "../core/permissions";
 import { STRATEGIES, type StrategyLevel } from "../core/strategy";
 import { weekKey } from "../core/autopilot";
-import { loadSafety } from "../agents/officer";
+import { loadSafety, lockAccount } from "../agents/officer";
 import { subscriptionOf } from "./billing";
 import { checkText } from "../core/safety";
 import type { XSocialAdapter } from "../integrations/x/adapter";
@@ -122,12 +122,17 @@ export async function markXEngagement(ctx: Ctx, deps: XEngageDeps, id: string, i
     return { status: "skipped" };
   }
   if (!(await subscriptionOf(ctx.db, it.account_id, now)).active) throw new ValidationError("Нужна активная подписка");
-  const s = await loadSafety(ctx.db, it.account_id);
-  if (s.excluded || (s.cooldownUntil && s.cooldownUntil > now)) throw new ValidationError("Аккаунт на охлаждении после сигнала площадки: подождите");
   const wk = weekKey(now);
-  const sent = (await ctx.db.query("SELECT count(*)::int n FROM x_engagements WHERE account_id = $1 AND kind = $2 AND week_key = $3 AND status = 'sent'", [it.account_id, it.kind, wk])).rows[0].n;
-  if (sent >= xEngageLimit(s.level ?? "reputation", it.kind)) throw new ValidationError("Недельный лимит стратегии исчерпан: продолжим на следующей неделе");
 
+  // Текст ответа валидируем до транзакции.
+  let text: string | null = null;
+  if (it.kind === "reply") {
+    text = (d.text ?? it.draft ?? "").trim();
+    if (!text) throw new ValidationError("Пустой ответ");
+    if (text.length > 280) throw new ValidationError("Ответ длиннее 280 символов");
+    const tc = checkText(text, "comment", []);
+    if (tc.block.length) throw new ValidationError(tc.block.includes("template_phrase") ? "Шаблонная фраза: перепишите своими словами" : "Текст заблокирован правилами безопасности");
+  }
   // Токен и идентификатор пользователя X берём из активного подключения аккаунта.
   const conn = (await ctx.db.query(`SELECT a.linkedin_urn AS user_id,
       (SELECT secret_ref FROM oauth_connections o WHERE o.account_id = a.id AND o.status IN ('active','expiring') ORDER BY updated_at DESC LIMIT 1) AS secret_ref
@@ -135,26 +140,33 @@ export async function markXEngagement(ctx: Ctx, deps: XEngageDeps, id: string, i
   const token = conn?.secret_ref ? await deps.secrets.get(conn.secret_ref) : null;
   if (!token || !conn?.user_id) throw new ValidationError("Аккаунт X не подключён");
 
+  // Блокировка аккаунта + атомарный захват элемента в транзакции: недельный лимит не превышается при
+  // одновременных касаниях, а сбой внешнего вызова откатывает статус (элемент снова доступен к отправке).
   let externalId: string | null = null;
-  try {
-    if (it.kind === "reply") {
-      const text = (d.text ?? it.draft ?? "").trim();
-      if (!text) throw new ValidationError("Пустой ответ");
-      if (text.length > 280) throw new ValidationError("Ответ длиннее 280 символов");
-      const tc = checkText(text, "comment", []);
-      if (tc.block.length) throw new ValidationError(tc.block.includes("template_phrase") ? "Шаблонная фраза: перепишите своими словами" : "Текст заблокирован правилами безопасности");
-      const res = await deps.xAdapter.publishTweet({ authorId: conn.user_id, accessToken: token, idempotencyKey: `xe:${id}`, text, replyToId: it.target_tweet_id });
-      externalId = res.externalId;
-      await ctx.db.query("UPDATE x_engagements SET status = 'sent', draft = $2, external_id = $3, week_key = $4, sent_at = now(), updated_at = now() WHERE id = $1", [id, text, externalId, wk]);
-    } else {
-      await deps.xAdapter.likeTweet({ userId: conn.user_id, accessToken: token, tweetId: it.target_tweet_id });
-      await ctx.db.query("UPDATE x_engagements SET status = 'sent', external_id = $2, week_key = $3, sent_at = now(), updated_at = now() WHERE id = $1", [id, it.target_tweet_id, wk]);
+  await ctx.db.tx(async (q) => {
+    await lockAccount(q, it.account_id);
+    const s = await loadSafety(q, it.account_id);
+    if (s.excluded || (s.cooldownUntil && s.cooldownUntil > now)) throw new ValidationError("Аккаунт на охлаждении после сигнала площадки: подождите");
+    const sent = (await q.query("SELECT count(*)::int n FROM x_engagements WHERE account_id = $1 AND kind = $2 AND week_key = $3 AND status = 'sent'", [it.account_id, it.kind, wk])).rows[0].n;
+    if (sent >= xEngageLimit(s.level ?? "reputation", it.kind)) throw new ValidationError("Недельный лимит стратегии исчерпан: продолжим на следующей неделе");
+    const claim = await q.query("UPDATE x_engagements SET status = 'sent', week_key = $2, sent_at = now(), updated_at = now() WHERE id = $1 AND status IN ('drafted','new') RETURNING id", [id, wk]);
+    if (!claim.rows.length) throw new ConflictError("Уже обработано");
+    try {
+      if (it.kind === "reply") {
+        const res = await deps.xAdapter.publishTweet({ authorId: conn.user_id, accessToken: token, idempotencyKey: `xe:${id}`, text: text!, replyToId: it.target_tweet_id });
+        externalId = res.externalId;
+        await q.query("UPDATE x_engagements SET draft = $2, external_id = $3 WHERE id = $1", [id, text, externalId]);
+      } else {
+        await deps.xAdapter.likeTweet({ userId: conn.user_id, accessToken: token, tweetId: it.target_tweet_id });
+        externalId = it.target_tweet_id;
+        await q.query("UPDATE x_engagements SET external_id = $2 WHERE id = $1", [id, externalId]);
+      }
+    } catch (e) {
+      if (e instanceof ValidationError) throw e;
+      if (e instanceof IntegrationError) throw new ValidationError(`X отклонил действие: ${e.message}`);
+      throw e;
     }
-  } catch (e) {
-    if (e instanceof ValidationError) throw e;
-    if (e instanceof IntegrationError) throw new ValidationError(`X отклонил действие: ${e.message}`);
-    throw e;
-  }
+  });
   await audit(ctx.db, ctx, { action: "x_engage.sent_manually", entity_type: "x_engagement", entity_id: id, client_id: it.client_id, account_id: it.account_id, details: { kind: it.kind, external_id: externalId } });
   return { status: "sent", external_id: externalId };
 }

@@ -7,7 +7,8 @@ import { actorCtx, loadActor } from "../src/services/context";
 import * as agent from "../src/services/agent";
 import * as acc from "../src/services/accounts";
 import * as company from "../src/services/company";
-import { autopilotTick, draftDue, newsFanout, planAll, portraitsTick, publishDue, publishXDue, syncPublished, deliverTelegram } from "../src/agents/autopilot";
+import { autopilotTick, draftDue, newsFanout, planAll, portraitsTick, publishDue, publishXDue, syncPublished, deliverTelegram, reapStalePublishingX } from "../src/agents/autopilot";
+import { IntegrationError } from "../src/integrations/linkedin/adapter";
 import { checkPost, lockAccount } from "../src/agents/officer";
 import { recordSignal } from "../src/agents/orchestrator";
 import { buildPassport, claimsFromInterview, composePost, passportHash, planWeek, roleByKey, signCallback, verifyCallback, warmup, weekKey, weekStartUtc, maxCompanyPostsPerDay } from "../src/core/autopilot";
@@ -534,5 +535,51 @@ describe("X (Twitter): адаптер и публикация через авт�
   it("без адаптера X publishXDue ничего не делает", async () => {
     const r = await publishXDue({ db: env.db }, new Date());
     expect(Object.keys(r).length).toBe(0);
+  });
+  async function scheduledXPost() {
+    const acc = await makeXAccount();
+    const client = (await env.db.query("SELECT client_id FROM managed_accounts WHERE id = $1", [acc])).rows[0].client_id;
+    const pid = (await env.db.query("INSERT INTO autopilot_posts(account_id, client_id, kind, slot_key, status, body, publish_at, topic_tag) VALUES ($1,$2,'post',$3,'scheduled','Тестовый твит про ML и данные на практике',$4,'ml') RETURNING id",
+      [acc, client, `slot-${Date.now()}`, new Date(Date.now() - 60_000).toISOString()])).rows[0].id;
+    return { acc, pid };
+  }
+  it("X: неизвестный исход завершает пост терминально, без повторной публикации (нет дублей)", async () => {
+    const { pid } = await scheduledXPost();
+    let calls = 0;
+    env.xAdapter.publishTweet = async () => { calls++; throw new IntegrationError("unknown_outcome", "timeout", "нет ответа"); };
+    const r1 = await publishXDue({ db: env.db, xAdapter: env.xAdapter, secrets: env.secrets }, new Date());
+    expect(r1.unknown).toBe(1);
+    expect(calls).toBe(1);
+    const p = (await env.db.query("SELECT status, veto_codes FROM autopilot_posts WHERE id = $1", [pid])).rows[0];
+    expect(p.status).toBe("failed");
+    expect(p.veto_codes).toContain("x_unknown");
+    // Второй проход не берёт завершённый пост и не публикует повторно.
+    const r2 = await publishXDue({ db: env.db, xAdapter: env.xAdapter, secrets: env.secrets }, new Date());
+    expect(calls).toBe(1);
+    expect(Object.keys(r2).length).toBe(0);
+  });
+  it("X: зависший publishing_x снимается ремувером в неизвестный исход", async () => {
+    const { pid } = await scheduledXPost();
+    await env.db.query("UPDATE autopilot_posts SET status = 'publishing_x', updated_at = now() - interval '20 minutes' WHERE id = $1", [pid]);
+    const r = await reapStalePublishingX({ db: env.db, xAdapter: env.xAdapter, secrets: env.secrets }, new Date());
+    expect(r.reaped).toBe(1);
+    expect((await env.db.query("SELECT status FROM autopilot_posts WHERE id = $1", [pid])).rows[0].status).toBe("failed");
+  });
+  it("X: без активной подписки publishXDue не публикует", async () => {
+    const { acc, pid } = await scheduledXPost();
+    await env.db.query("UPDATE subscriptions SET status = 'past_due' WHERE account_id = $1", [acc]);
+    let calls = 0;
+    env.xAdapter.publishTweet = async (r: any) => { calls++; return { externalId: "x", url: "https://x.com/i/web/status/1" }; };
+    const r = await publishXDue({ db: env.db, xAdapter: env.xAdapter, secrets: env.secrets }, new Date());
+    expect(calls).toBe(0);
+    expect((await env.db.query("SELECT status FROM autopilot_posts WHERE id = $1", [pid])).rows[0].status).toBe("scheduled");
+  });
+});
+
+describe("биллинг: провайдер в production", () => {
+  it("paymentsFromEnv падает в production без ключей Stripe (нет демо fail-open)", () => {
+    expect(() => billing.paymentsFromEnv({ NODE_ENV: "production" } as any)).toThrow(/Stripe/);
+    expect(billing.paymentsFromEnv({ NODE_ENV: "development" } as any).name).toBe("demo");
+    expect(billing.paymentsFromEnv({ STRIPE_SECRET_KEY: "sk", STRIPE_WEBHOOK_SECRET: "wh" } as any).name).toBe("stripe");
   });
 });

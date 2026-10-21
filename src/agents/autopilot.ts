@@ -248,6 +248,7 @@ export async function draftDue(deps: AutopilotDeps, now = new Date()) {
   const ai = deps.agentAi ?? deps.ai ?? new DemoAiProvider();
   const due = (await deps.db.query(`SELECT p.id FROM autopilot_posts p JOIN personal_agents g ON g.account_id = p.account_id
       WHERE p.status = 'planned' AND g.autopilot = 'on' AND g.passport_confirmed_at IS NOT NULL
+        AND EXISTS (SELECT 1 FROM subscriptions s WHERE s.account_id = p.account_id AND s.status IN ('active','trialing') AND s.period_end > now())
         AND p.publish_at <= $1::timestamptz + make_interval(hours => g.veto_hours + 12) ORDER BY p.publish_at LIMIT 30`, [now.toISOString()])).rows;
   const out: Record<string, number> = {};
   for (const { id } of due) {
@@ -369,13 +370,42 @@ export async function upsertContent(q: Queryable, agencyId: string, post: any, b
 /* ---------- 4. Публикация после окна отмены ---------- */
 export async function publishDue(deps: AutopilotDeps, now = new Date()) {
   const db = deps.db;
-  const due = (await db.query("SELECT id FROM autopilot_posts WHERE status IN ('veto_window','review') AND publish_at <= $1 ORDER BY publish_at LIMIT 30", [now.toISOString()])).rows;
+  const due = (await db.query(`SELECT id FROM autopilot_posts WHERE status IN ('veto_window','review') AND publish_at <= $1
+      AND EXISTS (SELECT 1 FROM subscriptions s WHERE s.account_id = autopilot_posts.account_id AND s.status IN ('active','trialing') AND s.period_end > now())
+      ORDER BY publish_at LIMIT 30`, [now.toISOString()])).rows;
   const out: Record<string, number> = {};
   for (const { id } of due) {
-    const r = await publishOne(deps, id, now);
-    out[r] = (out[r] ?? 0) + 1;
+    // Сбой одного поста не останавливает публикацию остальных в этом проходе.
+    try {
+      const r = await publishOne(deps, id, now);
+      out[r] = (out[r] ?? 0) + 1;
+    } catch (e: any) {
+      out.worker_error = (out.worker_error ?? 0) + 1;
+      console.error(JSON.stringify({ level: "error", msg: "publish_one_failed", post_id: id, error: e?.message }));
+    }
   }
   return out;
+}
+
+/** Завершить X-пост с неизвестным исходом: без слепого повтора, материал в publication_unknown, задача руководителю. */
+async function xUnknown(db: Db, post: any, ctx: any, reason: string) {
+  await db.tx(async (q) => {
+    await q.query("UPDATE autopilot_posts SET status = 'failed', veto_codes = array_append(veto_codes, $2), updated_at = now() WHERE id = $1 AND status IN ('publishing_x','scheduled')", [post.id, reason]);
+    if (post.content_item_id) await q.query("UPDATE content_items SET state = 'publication_unknown', updated_at = now(), row_version = row_version + 1 WHERE id = $1 AND state NOT IN ('published','archived','publication_unknown')", [post.content_item_id]);
+  });
+  await notify(db, { agency_id: ctx?.agency_id ?? post.client_id, client_id: post.client_id, user_ids: await managersOf(db, post.client_id), kind: "autopilot.failed", title: "Исход твита неизвестен: проверьте в X, вышел ли пост, и не публикуйте повторно", link: `#/accounts/${post.account_id}`, dedupe: `xunknown:${post.id}` });
+}
+
+/** Ремувер зависших публикаций X: пост застрял в 'publishing_x' (сбой процесса после захвата) — исход неизвестен. */
+export async function reapStalePublishingX(deps: AutopilotDeps, now = new Date(), staleMs = 10 * 60_000) {
+  const stale = (await deps.db.query("SELECT * FROM autopilot_posts WHERE status = 'publishing_x' AND updated_at < $1 LIMIT 50", [new Date(now.getTime() - staleMs).toISOString()])).rows;
+  let reaped = 0;
+  for (const p of stale) {
+    const ctx = (await deps.db.query("SELECT c.agency_id FROM managed_accounts a JOIN clients c ON c.id = a.client_id WHERE a.id = $1", [p.account_id])).rows[0];
+    await xUnknown(deps.db, p, ctx, "x_stuck");
+    reaped++;
+  }
+  return { reaped };
 }
 
 /** Публикация X: запланированные посты X-аккаунтов уходят в X API вне транзакции (тред по цепочке). */
@@ -385,15 +415,19 @@ export async function publishXDue(deps: AutopilotDeps, now = new Date()) {
   const out: Record<string, number> = {};
   if (!adapter || !deps.secrets) return out;
   const due = (await db.query(`SELECT p.id FROM autopilot_posts p JOIN managed_accounts a ON a.id = p.account_id
-      WHERE p.status = 'scheduled' AND a.network = 'x' ORDER BY p.publish_at LIMIT 20`)).rows;
+      WHERE p.status = 'scheduled' AND a.network = 'x' AND p.publish_at <= $1
+        AND EXISTS (SELECT 1 FROM subscriptions s WHERE s.account_id = p.account_id AND s.status IN ('active','trialing') AND s.period_end > now())
+      ORDER BY p.publish_at LIMIT 20`, [now.toISOString()])).rows;
   for (const { id } of due) {
     // Атомарный захват, чтобы два прохода не опубликовали дважды.
     const claimed = (await db.query("UPDATE autopilot_posts SET status = 'publishing_x', updated_at = now() WHERE id = $1 AND status = 'scheduled' RETURNING *", [id])).rows[0];
     if (!claimed) continue;
-    const ctx = (await db.query(`SELECT a.linkedin_urn AS author_id, c.agency_id, g.user_id,
+    let ctx: any;
+    try {
+      // Загрузка контекста внутри try: любой сбой здесь не оставит пост в 'publishing_x'.
+      ctx = (await db.query(`SELECT a.linkedin_urn AS author_id, c.agency_id, g.user_id,
         (SELECT secret_ref FROM oauth_connections o WHERE o.account_id = a.id AND o.status IN ('active','expiring') ORDER BY updated_at DESC LIMIT 1) AS secret_ref
         FROM managed_accounts a JOIN clients c ON c.id = a.client_id JOIN personal_agents g ON g.account_id = a.id WHERE a.id = $1`, [claimed.account_id])).rows[0];
-    try {
       const token = ctx?.secret_ref ? (await deps.secrets.get(ctx.secret_ref)) : null;
       if (!token || !ctx?.author_id) throw new IntegrationError("permanent", "no_api", "Нет подключения X");
       const parts = splitThread(claimed.body ?? "");
@@ -416,8 +450,9 @@ export async function publishXDue(deps: AutopilotDeps, now = new Date()) {
     } catch (e) {
       const err = e instanceof IntegrationError ? e : new IntegrationError("unknown_outcome", "unexpected", String((e as any)?.message ?? e));
       if (err.kind === "unknown_outcome") {
-        // Исход неизвестен: не повторяем вслепую, возвращаем в scheduled для ручной проверки на следующем проходе редко.
-        await db.query("UPDATE autopilot_posts SET status = 'scheduled', veto_codes = array_append(veto_codes, 'x_unknown'), updated_at = now() WHERE id = $1", [id]);
+        // Исход неизвестен: слепой повтор запрещён (иначе дубли в треде, т.к. X API без ключа идемпотентности).
+        // Пост завершается терминально, материал уходит в publication_unknown, руководитель проверяет вручную.
+        await xUnknown(db, claimed, ctx, "x_unknown");
         out.unknown = (out.unknown ?? 0) + 1;
       } else {
         await db.query("UPDATE autopilot_posts SET status = 'failed', veto_codes = array_append(veto_codes, $2), updated_at = now() WHERE id = $1", [id, err.code]);
@@ -588,20 +623,23 @@ export async function portraitsTick(deps: AutopilotDeps, now = new Date()) {
 
 /** Один проход автопилота. AUTOPILOT_DISABLED останавливает планирование, черновики и публикацию по всему агентству. */
 export async function autopilotTick(deps: AutopilotDeps, now = new Date()) {
-  const expired = await expireStale(deps.db, now);
-  const synced = await syncPublished(deps, now);
-  let planned = { created: 0 }, news = { created: 0 }, drafted = {}, published = {}, publishedX = {};
+  // Каждый под-шаг изолирован: сбой одного не останавливает остальные в этом проходе.
+  const r: Record<string, any> = { expired: {}, synced: {}, reaped_x: {}, planned: { created: 0 }, news: { created: 0 }, drafted: {}, published: {}, publishedX: {}, portraits: {}, packs: {}, telegram: {} };
+  const step = async (name: string, fn: () => Promise<unknown>) => { try { r[name] = await fn(); } catch (e: any) { r[name] = { error: e?.message ?? String(e) }; } };
+  await step("expired", () => expireStale(deps.db, now));
+  await step("synced", () => syncPublished(deps, now));
+  await step("reaped_x", () => reapStalePublishingX(deps, now));
   if (!deps.disabled) {
-    planned = await planAll(deps.db, now);
-    news = await newsFanout(deps.db, now);
-    drafted = await draftDue(deps, now);
-    published = await publishDue(deps, now);
-    publishedX = await publishXDue(deps, now);
+    await step("planned", () => planAll(deps.db, now));
+    await step("news", () => newsFanout(deps.db, now));
+    await step("drafted", () => draftDue(deps, now));
+    await step("published", () => publishDue(deps, now));
+    await step("publishedX", () => publishXDue(deps, now));
   }
-  const portraits = await portraitsTick(deps, now);
-  const packs = await packNotify(deps, now);
-  const telegram = await deliverTelegram(deps);
-  return { expired, synced, planned, news, drafted, published, publishedX, portraits, packs, telegram };
+  await step("portraits", () => portraitsTick(deps, now));
+  await step("packs", () => packNotify(deps, now));
+  await step("telegram", () => deliverTelegram(deps));
+  return r;
 }
 
 export { OPEN as AUTOPILOT_OPEN };

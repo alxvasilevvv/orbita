@@ -69,6 +69,8 @@ export class DemoPaymentProvider implements PaymentProvider {
 
 export function paymentsFromEnv(env = process.env): PaymentProvider {
   if (env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET) return new StripeProvider(env.STRIPE_SECRET_KEY, env.STRIPE_WEBHOOK_SECRET);
+  // В production демо-провайдер запрещён: иначе демо-подтверждение выдало бы реальную подписку бесплатно.
+  if (env.NODE_ENV === "production") throw new Error("В production обязателен Stripe: задайте STRIPE_SECRET_KEY и STRIPE_WEBHOOK_SECRET");
   return new DemoPaymentProvider();
 }
 
@@ -115,15 +117,17 @@ export async function startCheckout(ctx: Ctx, systemDb: Db, deps: { payments: Pa
   return { checkout_id: checkout.id, url: s.url, seats: ids.length, amount_usd: ids.length * PLAN.priceUsd };
 }
 
+async function activateCheckoutTx(q: Queryable, checkoutId: string, ref: string | null) {
+  const c = (await q.query("UPDATE billing_checkouts SET status = 'paid', paid_at = now() WHERE id = $1 AND status = 'pending' RETURNING *", [checkoutId])).rows[0];
+  if (!c) return { activated: 0 };
+  for (const id of c.account_ids) await extend(q, { accountId: id, clientId: c.client_id, months: 1, status: "active", provider: c.provider, ref, userId: c.created_by });
+  await q.query("INSERT INTO audit_events(agency_id, client_id, actor_id, action, entity_type, entity_id, details) VALUES ($1,$2,$3,'billing.paid','billing_checkout',$4,$5)",
+    [c.agency_id, c.client_id, c.created_by, c.id, JSON.stringify({ seats: c.account_ids.length, amount_usd: Number(c.amount_usd) })]);
+  return { activated: c.account_ids.length };
+}
+
 export async function activateCheckout(systemDb: Db, checkoutId: string, ref: string | null) {
-  return systemDb.tx(async (q) => {
-    const c = (await q.query("UPDATE billing_checkouts SET status = 'paid', paid_at = now() WHERE id = $1 AND status = 'pending' RETURNING *", [checkoutId])).rows[0];
-    if (!c) return { activated: 0 };
-    for (const id of c.account_ids) await extend(q, { accountId: id, clientId: c.client_id, months: 1, status: "active", provider: c.provider, ref, userId: c.created_by });
-    await q.query("INSERT INTO audit_events(agency_id, client_id, actor_id, action, entity_type, entity_id, details) VALUES ($1,$2,$3,'billing.paid','billing_checkout',$4,$5)",
-      [c.agency_id, c.client_id, c.created_by, c.id, JSON.stringify({ seats: c.account_ids.length, amount_usd: Number(c.amount_usd) })]);
-    return { activated: c.account_ids.length };
-  });
+  return systemDb.tx((q) => activateCheckoutTx(q, checkoutId, ref));
 }
 
 /** Демо-оплата: только при демо-провайдере, только автор оплаты. */
@@ -138,21 +142,24 @@ export async function paymentWebhook(systemDb: Db, payments: PaymentProvider, ra
   const ev = payments.parseWebhook(raw, headers);
   if (!ev) throw Object.assign(new Error("Неверная подпись"), { status: 400 });
   if (ev.type === "ignored") return { ignored: true };
-  // Идемпотентность: одно событие провайдера применяется один раз. Повтор доставки или переигрывание пропускаются.
-  if (ev.eventId) {
-    const first = (await systemDb.query("INSERT INTO billing_events(provider, event_id, type) VALUES ($1,$2,$3) ON CONFLICT (provider, event_id) DO NOTHING RETURNING id", [payments.name, ev.eventId, ev.type])).rows[0];
-    if (!first) return { duplicate: true };
-  }
-  if (ev.type === "checkout_paid" && ev.checkoutId) return activateCheckout(systemDb, ev.checkoutId, ev.subscriptionRef ?? null);
-  if (ev.subscriptionRef) {
-    const ids = (await systemDb.query("SELECT account_id, client_id FROM subscriptions WHERE provider_ref = $1", [ev.subscriptionRef])).rows;
-    for (const r of ids) {
-      if (ev.type === "renewed") await extend(systemDb, { accountId: r.account_id, clientId: r.client_id, months: 1, status: "active", provider: "stripe", ref: ev.subscriptionRef });
-      else await systemDb.query("UPDATE subscriptions SET status = $2, updated_at = now() WHERE account_id = $1", [r.account_id, ev.type === "canceled" ? "canceled" : "past_due"]);
+  // Идемпотентность и применение события — в одной транзакции: отметка о событии и его эффект
+  // фиксируются вместе, поэтому сбой между ними не теряет оплаченную активацию (Stripe повторит событие).
+  return systemDb.tx(async (q) => {
+    if (ev.eventId) {
+      const first = (await q.query("INSERT INTO billing_events(provider, event_id, type) VALUES ($1,$2,$3) ON CONFLICT (provider, event_id) DO NOTHING RETURNING id", [payments.name, ev.eventId, ev.type])).rows[0];
+      if (!first) return { duplicate: true };
     }
-    return { updated: ids.length };
-  }
-  return { ignored: true };
+    if (ev.type === "checkout_paid" && ev.checkoutId) return activateCheckoutTx(q, ev.checkoutId, ev.subscriptionRef ?? null);
+    if (ev.subscriptionRef) {
+      const ids = (await q.query("SELECT account_id, client_id FROM subscriptions WHERE provider_ref = $1", [ev.subscriptionRef])).rows;
+      for (const r of ids) {
+        if (ev.type === "renewed") await extend(q, { accountId: r.account_id, clientId: r.client_id, months: 1, status: "active", provider: "stripe", ref: ev.subscriptionRef });
+        else await q.query("UPDATE subscriptions SET status = $2, updated_at = now() WHERE account_id = $1", [r.account_id, ev.type === "canceled" ? "canceled" : "past_due"]);
+      }
+      return { updated: ids.length };
+    }
+    return { ignored: true };
+  });
 }
 
 /** Промокод: бесплатные месяцы. Один код один раз на аккаунт, лимит активаций соблюдается атомарно. */

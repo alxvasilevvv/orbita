@@ -260,14 +260,19 @@ async function handleFailure(deps: WorkerDeps, job: any, agencyId: string, actio
 export async function reapExpiredLeases(deps: WorkerDeps, now: Date) {
   const expired = (await deps.db.query("SELECT * FROM publication_jobs WHERE status = 'leased' AND lease_until < $1", [now.toISOString()])).rows;
   for (const job of expired) {
-    const agencyId = await agencyOf(deps.db, job.client_id);
-    await deps.db.tx(async (q) => {
-      const upd = await q.query("UPDATE publication_jobs SET status = 'unknown', last_error_code = 'lease_expired', lease_owner = NULL, updated_at = now() WHERE id = $1 AND status = 'leased' RETURNING id", [job.id]);
-      if (!upd.rows.length) return;
-      const st = (await q.query("SELECT state FROM content_items WHERE id = $1", [job.content_item_id])).rows[0].state;
-      if (st === "publishing") await systemSetContent(q, job, agencyId, "publication_unknown", "", { error: "lease_expired" });
-      await humanTask(q, job, "resolve_unknown", "Проверить исход публикации после сбоя исполнителя", "Исполнитель не завершил задание. Проверьте профиль перед повтором.");
-    });
+    // Один проблемный джоб (например, удалённый клиент → agencyOf бросит) не останавливает ни остальной reap, ни публикацию.
+    try {
+      const agencyId = await agencyOf(deps.db, job.client_id);
+      await deps.db.tx(async (q) => {
+        const upd = await q.query("UPDATE publication_jobs SET status = 'unknown', last_error_code = 'lease_expired', lease_owner = NULL, updated_at = now() WHERE id = $1 AND status = 'leased' RETURNING id", [job.id]);
+        if (!upd.rows.length) return;
+        const st = (await q.query("SELECT state FROM content_items WHERE id = $1", [job.content_item_id])).rows[0]?.state;
+        if (st === "publishing") await systemSetContent(q, job, agencyId, "publication_unknown", "", { error: "lease_expired" });
+        await humanTask(q, job, "resolve_unknown", "Проверить исход публикации после сбоя исполнителя", "Исполнитель не завершил задание. Проверьте профиль перед повтором.");
+      });
+    } catch (e) {
+      console.error(JSON.stringify({ level: "error", msg: "reap_lease_failed", job_id: job.id, error: (e as any)?.message }));
+    }
   }
 }
 
@@ -339,6 +344,7 @@ export async function resolveUnknownDue(deps: ResolveUnknownDeps, now = new Date
     `SELECT ci.id, ci.account_id, ci.client_id, c.agency_id, a.linkedin_urn AS author_urn,
             (SELECT secret_ref FROM oauth_connections o WHERE o.account_id = a.id AND o.status IN ('active','expiring') ORDER BY updated_at DESC LIMIT 1) AS secret_ref,
             (SELECT idempotency_key FROM publication_jobs pj WHERE pj.content_item_id = ci.id ORDER BY created_at DESC LIMIT 1) AS idemp,
+            (SELECT pj.id FROM publication_jobs pj WHERE pj.content_item_id = ci.id ORDER BY created_at DESC LIMIT 1) AS job_id,
             (SELECT left(cv.body, 40) FROM content_versions cv WHERE cv.id = ci.current_version_id) AS body_prefix,
             (SELECT mode FROM capability_snapshots cs WHERE cs.account_id = a.id AND cs.operation = 'read_own_posts' ORDER BY checked_at DESC, id DESC LIMIT 1) AS read_mode
        FROM content_items ci JOIN managed_accounts a ON a.id = ci.account_id JOIN clients c ON c.id = ci.client_id
@@ -359,7 +365,9 @@ export async function resolveUnknownDue(deps: ResolveUnknownDeps, now = new Date
     checked++;
     if (found && found !== "not_found") {
       await deps.db.tx(async (q) => {
-        await systemSetContent(q, { content_item_id: r.id, client_id: r.client_id, account_id: r.account_id, id: null }, r.agency_id, "published", "", { auto: true });
+        // Реальный id задания в фиктивном job: иначе dedupe-ключ события схлопнулся бы в "content.published:null".
+        await systemSetContent(q, { content_item_id: r.id, client_id: r.client_id, account_id: r.account_id, id: r.job_id ?? r.id }, r.agency_id, "published", "", { auto: true });
+        await emit(q, "analytics.collect", r.client_id, { content_item_id: r.id, account_id: r.account_id }, `analytics:${r.id}`);
         await q.query(`INSERT INTO external_publications(client_id, account_id, content_item_id, external_id, url, evidence_type, published_at)
                        VALUES ($1,$2,$3,$4,$5,'api_confirmed', now()) ON CONFLICT (content_item_id) DO UPDATE SET external_id = EXCLUDED.external_id, url = EXCLUDED.url, evidence_type = 'api_confirmed'`,
           [r.client_id, r.account_id, r.id, found.externalId, found.url]);
