@@ -24,18 +24,26 @@ export class PostmarkMailer implements Mailer {
     if (!r.ok) throw new Error(`Postmark ${r.status}`);
   }
 }
-/** Вебхук (Slack, Telegram-бот, n8n). Получает JSON без клиентского контента. */
+/**
+ * Вебхук (Slack incoming webhook, Telegram-бот, n8n). Получает JSON без клиентского контента.
+ * Поле `text` совместимо со Slack (заголовок + рабочая ссылка); `to`/`link` оставлены для других получателей.
+ */
 export class WebhookMailer implements Mailer {
   name = "webhook";
-  constructor(private url: string) {}
+  constructor(private url: string, private appUrl = "", private fetchImpl: typeof fetch = fetch) {}
+  payload(m: { to: string; subject: string; link?: string | null }) {
+    const link = m.link ? `${this.appUrl}${m.link.startsWith("/") ? "" : "/"}${m.link}` : null;
+    return { text: `${m.subject}${link ? `\n${link}` : ""}`, to: m.to, link };
+  }
   async send(m: { to: string; subject: string; link?: string | null }) {
-    const r = await fetch(this.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: m.to, text: m.subject, link: m.link }) });
+    const r = await this.fetchImpl(this.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.payload(m)) });
     if (!r.ok) throw new Error(`Webhook ${r.status}`);
   }
 }
 export function mailerFromEnv(env = process.env): Mailer {
   if (env.POSTMARK_TOKEN && env.MAIL_FROM) return new PostmarkMailer(env.POSTMARK_TOKEN, env.MAIL_FROM, env.APP_URL ?? "");
-  if (env.NOTIFY_WEBHOOK_URL) return new WebhookMailer(env.NOTIFY_WEBHOOK_URL);
+  if (env.SLACK_WEBHOOK_URL) return new WebhookMailer(env.SLACK_WEBHOOK_URL, env.APP_URL ?? "");
+  if (env.NOTIFY_WEBHOOK_URL) return new WebhookMailer(env.NOTIFY_WEBHOOK_URL, env.APP_URL ?? "");
   return new ConsoleMailer();
 }
 
