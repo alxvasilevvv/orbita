@@ -44,7 +44,8 @@ function App() {
   const meta = useApi<any>("/api/meta");
   const dev = meta.data ? !!meta.data.auth?.dev : true; // пока meta грузится, считаем демо, чтобы не мигать экраном входа
   const users = useApi<any[]>(dev ? "/api/dev/users" : null, [dev]);
-  const me = useApi<Me>((uid || (!!meta.data && !dev)) ? "/api/me" : null, [uid, dev]);
+  // Всегда пробуем /api/me: подписанная куки-сессия (вход по паролю / Google) имеет приоритет над демо-заголовком.
+  const me = useApi<Me>("/api/me", [uid]);
   const approvals = useApi<any[]>(uid && me.data?.internal ? "/api/approvals" : null, [uid, me.data?.id]);
   const show = useCallback((msg: string, err?: boolean) => { setToast({ msg, err }); setTimeout(() => setToast(null), 5000); }, []);
   const switchUser = (id: string) => { setCurrentUser(id); setUid(id); location.hash = "/"; };
@@ -79,9 +80,9 @@ function App() {
   const employeePage = () => route.startsWith("/me/actions") ? <MyActions /> : route.startsWith("/me/outreach") ? <OutreachPage /> : route.startsWith("/me/pay") ? <RenewPage /> : <MyAgentPage />;
   if (inv) page = <InvitePage token={inv[1]} onAccepted={(id) => switchUser(id)} />;
   else if (pay && m) page = <DemoPayPage id={pay[1]} />;
-  else if (!m) page = (!dev && meta.data?.auth?.google)
-    ? <div className="login-gate"><span className="orbit-mark" aria-hidden="true"><i /></span><h1>Orbita</h1><p className="muted">{t("Войдите, чтобы продолжить")}</p><a className="btn primary" href="/auth/google/start">{t("Войти через Google")}</a></div>
-    : me.error ? <div className="notice info">{t("Выберите пользователя внизу слева, чтобы войти.")}</div> : <p className="muted">{t("Загрузка…")}</p>;
+  else if (!m) page = (!dev && me.error)
+    ? <div className="login-gate"><span className="orbit-mark" aria-hidden="true"><i /></span><h1>Orbita</h1><p className="muted">{t("Войдите, чтобы продолжить")}</p><a className="btn primary" href="/auth/login">{t("Войти")}</a></div>
+    : me.error ? (dev ? <div className="notice info">{t("Выберите пользователя внизу слева, чтобы войти.")}</div> : <p className="muted">{t("Загрузка…")}</p>) : <p className="muted">{t("Загрузка…")}</p>;
   else if (m.auditor_only) page = <Audit />;
   else if (m.company_admin) page = mis ? <MissionPage id={mis[1]} /> : c ? <ContentPage id={c[1]} /> : rep ? <ReportPage id={rep[1]} /> : route.startsWith("/me") ? employeePage() : <CompanyPage id={comp?.[1] ?? m.company_ids![0]} />;
   else if (m.personal_agent && !m.internal) page = c ? <ContentPage id={c[1]} /> : employeePage();

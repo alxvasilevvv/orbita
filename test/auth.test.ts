@@ -76,3 +76,29 @@ describe("вход по куки-сессии", () => {
     expect((await app.inject({ method: "GET", url: "/auth/google/start" })).statusCode).toBe(404);
   });
 });
+
+describe("вход по email и паролю", () => {
+  it("hashPassword/verifyPassword: корректный и неверный пароль", () => {
+    const h = authn.hashPassword("orbita2026");
+    expect(authn.verifyPassword("orbita2026", h)).toBe(true);
+    expect(authn.verifyPassword("wrong", h)).toBe(false);
+    expect(authn.verifyPassword("x", null)).toBe(false);
+  });
+  it("демо-пользователь входит по email и паролю по умолчанию, выдаётся сессия", async () => {
+    const app = buildApp({ db: env.db, secrets: env.secrets, authMode: "dev" });
+    const r = await app.inject({ method: "POST", url: "/auth/password/login", payload: { email: "am@demo.agency", password: "orbita2026" } });
+    expect(r.statusCode).toBe(200);
+    const setCookie = String(r.headers["set-cookie"]);
+    expect(setCookie).toContain("orbita_session=");
+    // Куки-сессия из логина действительно аутентифицирует.
+    const sess = setCookie.split("orbita_session=")[1].split(";")[0];
+    const me = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: `orbita_session=${decodeURIComponent(sess)}` } });
+    expect(me.statusCode).toBe(200);
+    // Неверный пароль — 401.
+    const bad = await app.inject({ method: "POST", url: "/auth/password/login", payload: { email: "am@demo.agency", password: "nope" } });
+    expect(bad.statusCode).toBe(401);
+    // Неизвестный email — 401.
+    const nouser = await app.inject({ method: "POST", url: "/auth/password/login", payload: { email: "ghost@demo.agency", password: "orbita2026" } });
+    expect(nouser.statusCode).toBe(401);
+  });
+});

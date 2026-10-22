@@ -180,9 +180,26 @@ export function buildApp(deps: AppDeps) {
 
   // Реальный вход через Google (OpenID Connect, code flow + PKCE). Активен при GOOGLE_CLIENT_ID/SECRET.
   const googleRedirect = () => `${process.env.APP_URL ?? ""}/auth/google/callback`;
-  app.get("/auth/login", async (_r, reply) => {
-    const on = authn.googleEnabled();
-    reply.type("text/html; charset=utf-8").send(`<!doctype html><meta charset=utf-8><title>Orbita — вход</title><body style="font-family:ui-sans-serif,system-ui;background:#0a0a0a;color:#eee;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h1 style="font-weight:800">Orbita</h1>${on ? `<a href="/auth/google/start" style="display:inline-block;background:#c6f24e;color:#0a0a0a;font-weight:700;padding:12px 20px;border-radius:999px;text-decoration:none">Войти через Google</a>` : `<p style="opacity:.7">Вход через Google пока не настроен.</p>`}</div></body>`);
+  app.get("/auth/login", async (req: FastifyRequest<{ Querystring: { e?: string } }>, reply) => {
+    const google = authn.googleEnabled();
+    const err = req.query.e === "not_provisioned" ? "Этот аккаунт не заведён в системе. Обратитесь к администратору." : "";
+    reply.type("text/html; charset=utf-8").send(`<!doctype html><html lang=ru><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Orbita — вход</title>
+<style>*{box-sizing:border-box}body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto;background:#0a0a0a;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0;padding:16px}
+.card{width:100%;max-width:360px;text-align:center}h1{font-weight:800;letter-spacing:-.02em;margin:.2em 0}.sub{opacity:.6;margin:0 0 20px;font-size:14px}
+input{width:100%;padding:12px 14px;margin:6px 0;border-radius:10px;border:1px solid #333;background:#141414;color:#eee;font-size:15px}
+button{width:100%;padding:12px;border:0;border-radius:999px;background:#c6f24e;color:#0a0a0a;font-weight:700;font-size:15px;cursor:pointer;margin-top:8px}
+.g{display:block;margin-top:14px;color:#c6f24e;text-decoration:none;font-weight:600;font-size:14px}.err{color:#ff8080;font-size:13px;min-height:18px;margin:6px 0}</style>
+<body><div class=card><h1>Orbita</h1><p class=sub>агенты ведут соцсети вашей команды</p>
+<form id=f><input id=email type=email placeholder=Email autocomplete=username required><input id=pw type=password placeholder=Пароль autocomplete=current-password required><div class=err id=err>${err}</div><button type=submit>Войти</button></form>
+${google ? `<a class=g href="/auth/google/start">Войти через Google</a>` : ``}</div>
+<script>var f=document.getElementById('f');f.onsubmit=async function(e){e.preventDefault();var err=document.getElementById('err');err.textContent='';try{var r=await fetch('/auth/password/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:document.getElementById('email').value,password:document.getElementById('pw').value})});if(r.ok){location.href='/#/';}else{var j=await r.json().catch(function(){return{}});err.textContent=j.message||'Неверный email или пароль';}}catch(x){err.textContent='Ошибка сети';}};</script></body></html>`);
+  });
+  app.post("/auth/password/login", async (req, reply) => {
+    const d = z.object({ email: z.string().email(), password: z.string().min(1).max(200) }).parse(req.body);
+    const u = (await deps.db.query("SELECT id, password_hash FROM users WHERE lower(email) = lower($1) AND is_active", [d.email])).rows[0];
+    if (!u || !authn.verifyPassword(d.password, u.password_hash)) throw Object.assign(new Error("Неверный email или пароль"), { status: 401 });
+    reply.header("set-cookie", authn.cookie("orbita_session", authn.createSession(u.id), { maxAge: 7 * 24 * 3600 }));
+    return { ok: true };
   });
   app.get("/auth/google/start", async (_r, reply) => {
     if (!authn.googleEnabled()) return reply.status(404).send("Вход через Google не настроен");

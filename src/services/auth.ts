@@ -1,4 +1,4 @@
-import { createHmac, createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, createHash, randomBytes, timingSafeEqual, scryptSync } from "node:crypto";
 
 /**
  * Реальная аутентификация: сессии на подписанных куки и вход через Google (OpenID Connect, code flow + PKCE).
@@ -54,6 +54,22 @@ export function cookie(name: string, value: string, opts: { maxAge?: number; sec
   if (opts.secure !== false) bits.push("Secure");
   bits.push(`Max-Age=${opts.maxAge ?? 0}`);
   return bits.join("; ");
+}
+
+/** Пароль: scrypt с солью. Формат хранения `scrypt:<salt_hex>:<hash_hex>`. */
+export function hashPassword(pw: string): string {
+  const salt = randomBytes(16);
+  return `scrypt:${salt.toString("hex")}:${scryptSync(pw, salt, 64).toString("hex")}`;
+}
+export function verifyPassword(pw: string, stored: string | null | undefined): boolean {
+  if (!stored) return false;
+  const [scheme, saltHex, hashHex] = stored.split(":");
+  if (scheme !== "scrypt" || !saltHex || !hashHex) return false;
+  try {
+    const want = Buffer.from(hashHex, "hex");
+    const got = scryptSync(pw, Buffer.from(saltHex, "hex"), want.length);
+    return want.length === got.length && timingSafeEqual(want, got);
+  } catch { return false; }
 }
 
 export function googleEnabled(env = process.env) { return !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET); }

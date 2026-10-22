@@ -1,5 +1,6 @@
 import type { Db } from "./db";
 import { DEFAULT_METRIC_DEFINITIONS } from "../core/metrics";
+import { hashPassword } from "../services/auth";
 
 export async function ensureReferenceData(db: Db) {
   for (const m of DEFAULT_METRIC_DEFINITIONS) {
@@ -132,6 +133,8 @@ export async function seedDemo(db: Db, opts: { x?: boolean } = {}) {
   await seedAutopilot(db, c1, empAcc);
   if (opts.x) await seedXAccount(db, c1, empAcc.anna);
   await db.query("INSERT INTO metric_snapshots(client_id, account_id, metric_key, value, observed_at, source, availability_status) VALUES ($1,$2,'followers',1840, now() - interval '31 days','manual_entry','available'),($1,$2,'followers',2115, now() - interval '1 day','manual_entry','available')", [c1, a2]);
+  // Пароль по умолчанию для всех демо-пользователей: вход по email + "orbita2026" (для первых клиентов и тестов).
+  await db.query("UPDATE users SET password_hash = $1 WHERE agency_id = $2 AND password_hash IS NULL", [hashPassword("orbita2026"), ag]);
   return { agency_id: ag, seeded: true, users: u };
 }
 

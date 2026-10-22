@@ -1264,5 +1264,6 @@ export const EN: Record<string, string> = {
   "Цели добавлены": "Targets added",
   "Войдите, чтобы продолжить": "Sign in to continue",
   "Войти через Google": "Sign in with Google",
+  "Войти": "Sign in",
   "Выйти": "Sign out",
 };
