@@ -109,6 +109,37 @@ function rateLimiter(limitPerMin: number) {
   };
 }
 
+const LOGIN_CSS = `:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;font-family:"Golos Text",ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#eaeaea;
+background:radial-gradient(1200px 600px at 50% -10%,rgba(198,242,78,.10),transparent 60%),#0a0a0a}
+.auth{min-height:100vh;display:grid;place-items:center;padding:24px}
+.card{width:100%;max-width:380px;background:#121212;border:1px solid #242424;border-radius:18px;padding:32px 28px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.brand{display:flex;align-items:center;gap:10px;justify-content:center}
+.brand .wm{font-weight:800;font-size:26px;letter-spacing:-.02em}
+.brand .mark{width:26px;height:26px;border-radius:50%;border:2.5px solid #c6f24e;position:relative;box-shadow:0 0 18px rgba(198,242,78,.5)}
+.brand .mark::after{content:"";position:absolute;width:7px;height:7px;background:#c6f24e;border-radius:50%;top:-3px;left:50%;transform:translateX(-50%)}
+.sub{text-align:center;color:#8c8c8c;font-size:13.5px;margin:10px 0 24px}
+form{display:flex;flex-direction:column;gap:12px}
+label{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:#9a9a9a;font-weight:500}
+input{padding:12px 14px;border-radius:11px;border:1px solid #2e2e2e;background:#0d0d0d;color:#fff;font-size:15px;outline:none;transition:border-color .15s,box-shadow .15s}
+input:focus{border-color:#c6f24e;box-shadow:0 0 0 3px rgba(198,242,78,.15)}
+.err{color:#ff7b7b;font-size:12.5px;min-height:16px;text-align:center}
+button{padding:13px;border:0;border-radius:999px;background:#c6f24e;color:#0a0a0a;font-weight:700;font-size:15px;cursor:pointer;transition:filter .15s,transform .05s}
+button:hover{filter:brightness(1.05)}button:active{transform:translateY(1px)}button:disabled{opacity:.6;cursor:default}
+.divider{display:flex;align-items:center;gap:12px;color:#5a5a5a;font-size:12px;margin:18px 0}
+.divider::before,.divider::after{content:"";height:1px;background:#262626;flex:1}
+.gbtn{display:flex;align-items:center;justify-content:center;gap:10px;padding:12px;border:1px solid #2e2e2e;border-radius:999px;background:#fff;color:#1a1a1a;font-weight:600;font-size:14.5px;text-decoration:none}
+.gbtn:hover{background:#f3f3f3}
+.foot{text-align:center;color:#5a5a5a;font-size:11.5px;margin:22px 0 0}`;
+
+const LOGIN_JS = `(function(){var f=document.getElementById('f'),err=document.getElementById('err'),btn=document.getElementById('btn');
+if(!f)return;f.addEventListener('submit',async function(e){e.preventDefault();err.textContent='';btn.disabled=true;btn.textContent='Входим…';
+try{var r=await fetch('/auth/password/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:(document.getElementById('email').value||'').trim(),password:document.getElementById('pw').value||''})});
+if(r.ok){location.href='/#/';return;}var j=await r.json().catch(function(){return{};});err.textContent=(j&&j.message)||'Неверный email или пароль';}
+catch(x){err.textContent='Ошибка сети, попробуйте снова';}
+btn.disabled=false;btn.textContent='Войти';});})();`;
+
 export function buildApp(deps: AppDeps) {
   const storage = deps.storage ?? new LocalStorage(process.env.FILES_DIR ?? "./data/files", process.env.SECRETS_KEY ?? "dev-only-insecure-key");
   const scanner = deps.scanner ?? new SignatureScanner();
@@ -182,18 +213,25 @@ export function buildApp(deps: AppDeps) {
   const googleRedirect = () => `${process.env.APP_URL ?? ""}/auth/google/callback`;
   app.get("/auth/login", async (req: FastifyRequest<{ Querystring: { e?: string } }>, reply) => {
     const google = authn.googleEnabled();
-    const err = req.query.e === "not_provisioned" ? "Этот аккаунт не заведён в системе. Обратитесь к администратору." : "";
-    reply.type("text/html; charset=utf-8").send(`<!doctype html><html lang=ru><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Orbita — вход</title>
-<style>*{box-sizing:border-box}body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto;background:#0a0a0a;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0;padding:16px}
-.card{width:100%;max-width:360px;text-align:center}h1{font-weight:800;letter-spacing:-.02em;margin:.2em 0}.sub{opacity:.6;margin:0 0 20px;font-size:14px}
-input{width:100%;padding:12px 14px;margin:6px 0;border-radius:10px;border:1px solid #333;background:#141414;color:#eee;font-size:15px}
-button{width:100%;padding:12px;border:0;border-radius:999px;background:#c6f24e;color:#0a0a0a;font-weight:700;font-size:15px;cursor:pointer;margin-top:8px}
-.g{display:block;margin-top:14px;color:#c6f24e;text-decoration:none;font-weight:600;font-size:14px}.err{color:#ff8080;font-size:13px;min-height:18px;margin:6px 0}</style>
-<body><div class=card><h1>Orbita</h1><p class=sub>агенты ведут соцсети вашей команды</p>
-<form id=f><input id=email type=email placeholder=Email autocomplete=username required><input id=pw type=password placeholder=Пароль autocomplete=current-password required><div class=err id=err>${err}</div><button type=submit>Войти</button></form>
-${google ? `<a class=g href="/auth/google/start">Войти через Google</a>` : ``}</div>
-<script>var f=document.getElementById('f');f.onsubmit=async function(e){e.preventDefault();var err=document.getElementById('err');err.textContent='';try{var r=await fetch('/auth/password/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:document.getElementById('email').value,password:document.getElementById('pw').value})});if(r.ok){location.href='/#/';}else{var j=await r.json().catch(function(){return{}});err.textContent=j.message||'Неверный email или пароль';}}catch(x){err.textContent='Ошибка сети';}};</script></body></html>`);
+    const err = req.query.e === "not_provisioned" ? "Этот аккаунт ещё не заведён. Обратитесь к администратору вашей компании." : "";
+    const googleBlock = google ? `<div class="divider"><span>или</span></div><a class="gbtn" href="/auth/google/start"><svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.8-6.8C35.6 2.4 30.2 0 24 0 14.6 0 6.4 5.4 2.5 13.2l7.9 6.2C12.3 13.7 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9.1h12.4c-.5 2.9-2.1 5.3-4.6 7l7.1 5.5c4.2-3.9 6.6-9.6 6.6-16z"/><path fill="#FBBC05" d="M10.4 28.6c-.5-1.4-.8-3-.8-4.6s.3-3.2.8-4.6l-7.9-6.2C.9 16.5 0 20.1 0 24s.9 7.5 2.5 10.8l7.9-6.2z"/><path fill="#34A853" d="M24 48c6.2 0 11.5-2 15.3-5.5l-7.1-5.5c-2 1.4-4.6 2.2-8.2 2.2-6.4 0-11.7-4.2-13.6-9.9l-7.9 6.2C6.4 42.6 14.6 48 24 48z"/></svg>Войти через Google</a>` : "";
+    reply.type("text/html; charset=utf-8").send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orbita — вход</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/auth/login.css"></head>
+<body><main class="auth"><section class="card">
+<div class="brand"><span class="mark" aria-hidden="true"></span><span class="wm">Orbita</span></div>
+<p class="sub">Платформа ведения соцсетей вашей команды</p>
+<form id="f" novalidate>
+<label>Email<input id="email" type="email" placeholder="you@company.com" autocomplete="username" required></label>
+<label>Пароль<input id="pw" type="password" placeholder="••••••••" autocomplete="current-password" required></label>
+<div class="err" id="err" role="alert">${err}</div>
+<button type="submit" id="btn">Войти</button>
+</form>${googleBlock}
+<p class="foot">Нажимая «Войти», вы принимаете условия сервиса.</p>
+</section></main><script src="/auth/login.js"></script></body></html>`);
   });
+  app.get("/auth/login.css", async (_r, reply) => reply.type("text/css; charset=utf-8").header("Cache-Control", "max-age=300").send(LOGIN_CSS));
+  app.get("/auth/login.js", async (_r, reply) => reply.type("application/javascript; charset=utf-8").header("Cache-Control", "max-age=300").send(LOGIN_JS));
   app.post("/auth/password/login", async (req, reply) => {
     const d = z.object({ email: z.string().email(), password: z.string().min(1).max(200) }).parse(req.body);
     const u = (await deps.db.query("SELECT id, password_hash FROM users WHERE lower(email) = lower($1) AND is_active", [d.email])).rows[0];
