@@ -208,6 +208,10 @@ export function buildApp(deps: AppDeps) {
   app.get("/", asset("index.html", "text/html; charset=utf-8"));
   app.get("/app.js", asset("app.js", "application/javascript; charset=utf-8"));
   app.get("/app.css", asset("app.css", "text/css; charset=utf-8"));
+  const faviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0c0d0a"/><circle cx="16" cy="16" r="8.5" fill="none" stroke="#c6f24e" stroke-width="3"/><circle cx="23" cy="9" r="2.6" fill="#c6f24e"/></svg>`;
+  const favicon = async (_r: FastifyRequest, reply: FastifyReply) => reply.type("image/svg+xml").header("Cache-Control", "max-age=86400").send(faviconSvg);
+  app.get("/favicon.svg", favicon);
+  app.get("/favicon.ico", favicon);
 
   // Реальный вход через Google (OpenID Connect, code flow + PKCE). Активен при GOOGLE_CLIENT_ID/SECRET.
   const googleRedirect = () => `${process.env.APP_URL ?? ""}/auth/google/callback`;
@@ -215,7 +219,7 @@ export function buildApp(deps: AppDeps) {
     const google = authn.googleEnabled();
     const err = req.query.e === "not_provisioned" ? "Этот аккаунт ещё не заведён. Обратитесь к администратору вашей компании." : "";
     const googleBlock = google ? `<div class="divider"><span>или</span></div><a class="gbtn" href="/auth/google/start"><svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.8-6.8C35.6 2.4 30.2 0 24 0 14.6 0 6.4 5.4 2.5 13.2l7.9 6.2C12.3 13.7 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9.1h12.4c-.5 2.9-2.1 5.3-4.6 7l7.1 5.5c4.2-3.9 6.6-9.6 6.6-16z"/><path fill="#FBBC05" d="M10.4 28.6c-.5-1.4-.8-3-.8-4.6s.3-3.2.8-4.6l-7.9-6.2C.9 16.5 0 20.1 0 24s.9 7.5 2.5 10.8l7.9-6.2z"/><path fill="#34A853" d="M24 48c6.2 0 11.5-2 15.3-5.5l-7.1-5.5c-2 1.4-4.6 2.2-8.2 2.2-6.4 0-11.7-4.2-13.6-9.9l-7.9 6.2C6.4 42.6 14.6 48 24 48z"/></svg>Войти через Google</a>` : "";
-    reply.type("text/html; charset=utf-8").send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orbita — вход</title>
+    reply.type("text/html; charset=utf-8").send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orbita — вход</title><link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/auth/login.css"></head>
 <body><main class="auth"><section class="card">
