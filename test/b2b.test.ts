@@ -107,6 +107,24 @@ describe("роль руководителя компании", () => {
     expect((await leader.db.query("SELECT count(*)::int n FROM agent_missions")).rows[0].n).toBe(1);
   });
 
+  it("RLS прямым SQL: руководитель не видит материалы и аккаунты сотрудников, но видит страницу компании и строки уровня клиента", async () => {
+    await amplify();
+    const leader = await env.ctx("leader");
+    const anna = (await env.db.query("SELECT id, client_id FROM managed_accounts WHERE display_name LIKE 'Anna%'")).rows[0];
+    const page = (await env.db.query("SELECT id FROM managed_accounts WHERE kind = 'company_page'")).rows[0];
+    await env.db.query("INSERT INTO content_items(client_id, account_id, title, state) VALUES ($1,$2,'Личный черновик','draft')", [anna.client_id, anna.id]);
+    // Личный аккаунт сотрудника и его материалы закрыты даже прямым запросом в обход сервисов.
+    expect((await leader.db.query("SELECT count(*)::int n FROM managed_accounts WHERE id = $1", [anna.id])).rows[0].n).toBe(0);
+    expect((await leader.db.query("SELECT count(*)::int n FROM content_items WHERE account_id = $1", [anna.id])).rows[0].n).toBe(0);
+    // Страница компании и её материалы видны.
+    expect((await leader.db.query("SELECT count(*)::int n FROM managed_accounts WHERE id = $1", [page.id])).rows[0].n).toBe(1);
+    expect((await leader.db.query("SELECT count(*)::int n FROM content_items WHERE account_id = $1", [page.id])).rows[0].n).toBeGreaterThan(0);
+    // Запись строки уровня клиента (audit_events при создании миссии) проходит; чужого клиента не видно.
+    expect((await leader.db.query("SELECT count(*)::int n FROM agent_missions")).rows[0].n).toBe(1);
+    const other = (await env.acct("Елена Петрова")).client_id;
+    expect((await leader.db.query("SELECT count(*)::int n FROM managed_accounts WHERE client_id = $1", [other])).rows[0].n).toBe(0);
+  });
+
   it("не одобряет действие и не даёт согласие за сотрудника", async () => {
     const { mission } = await amplify();
     const a = (await env.db.query("SELECT id, account_id FROM mission_actions WHERE mission_id = $1 LIMIT 1", [mission.id])).rows[0];

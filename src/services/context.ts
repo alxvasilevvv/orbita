@@ -23,22 +23,25 @@ export async function loadActor(db: Queryable, userId: string): Promise<Actor | 
   if (!u) return null;
   const memberships: Membership[] = typeof u.memberships === "string" ? JSON.parse(u.memberships) : u.memberships;
   const wide = agencyWide(memberships);
-  // Клиенты целиком: все клиенты агентства для ролей уровня агентства и роли на клиента (кроме аудитора).
-  // ПРИМЕЧАНИЕ (defense-in-depth, к доработке с миграцией apply_rls): client_admin здесь получает full-область
-  // клиента, поэтому на уровне БД видит и строки личных аккаунтов сотрудников. На уровне сервисов это закрыто
-  // (accountScope отклоняет личные аккаунты для client_admin), а кабинет руководителя читает агрегаты через
-  // системную БД. Полная изоляция в RLS требует правки apply_rls (разрешить client-уровневые строки в таблицах
-  // с account_id по partial-клиентам) и проверки всех потоков руководителя — делается отдельно.
-  const full = new Set<string>([...(wide ? u.agency_clients : []), ...memberships.filter((m) => m.scope_client_id && !m.scope_account_id && m.role !== "auditor").map((m) => m.scope_client_id as string)]);
+  // Клиенты целиком: все клиенты агентства для ролей уровня агентства и роли на клиента (кроме аудитора и руководителя компании).
+  // Руководитель компании (client_admin) намеренно НЕ в full-области: на уровне БД он видит только строки уровня
+  // клиента (account_id IS NULL) своей компании через partial, но не личные аккаунты сотрудников. Доступ к странице
+  // компании и агрегатам кабинета идёт через сервисный слой (accountScope, системная БД). См. миграцию 019_leader_partial_rls.
+  const full = new Set<string>([...(wide ? u.agency_clients : []), ...memberships.filter((m) => m.scope_client_id && !m.scope_account_id && m.role !== "auditor" && m.role !== "client_admin").map((m) => m.scope_client_id as string)]);
   // Роль на аккаунт открывает только этот аккаунт и строки уровня его клиента, но не соседние аккаунты.
   const accountIds = [...new Set(memberships.filter((m) => m.scope_account_id && m.role !== "auditor").map((m) => m.scope_account_id as string))];
+  // Partial — строго роль на аккаунт: клиент этого аккаунта, видны только строки уровня клиента, но не страница компании и не соседние аккаунты.
   const partialClientIds = (u.account_clients as string[]).filter((c) => !full.has(c));
+  // Руководитель компании: отдельная область. Видит строки уровня клиента (account_id IS NULL) и страницу компании с её материалами,
+  // но не личные аккаунты сотрудников и не их персональные таблицы (owner_scoped). См. миграцию 019_leader_partial_rls.
+  const leaderClientIds = [...new Set(memberships.filter((m) => m.role === "client_admin" && m.scope_client_id && !m.scope_account_id).map((m) => m.scope_client_id as string))].filter((c) => !full.has(c));
   const scope: DbScope = {
     agencyId: u.agency_id,
     allClients: wide,
     clientIds: [...full],
     accountIds,
     partialClientIds,
+    leaderClientIds,
     internal: memberships.some((m) => !isExternalRole(m.role)),
     // Глобальный аудит-доступ только у аудитора уровня агентства (без привязки к клиенту) и владельца.
     // Аудитор, привязанный к конкретному клиенту, не получает сквозного чтения по всем клиентам (fail-closed).
