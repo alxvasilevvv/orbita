@@ -85,7 +85,9 @@ function externalRouteAllowed(ctx: Ctx, method: string, url: string) {
 export interface AppDeps {
   db: Db;
   secrets: SecretStoreFull | (pub.SecretStore & { set?(k: string, v: string): unknown; delete?(k: string): Promise<void> });
-  authMode: "dev" | "header";
+  // dev: доверяет x-user-id (только вне production). header: доверяет x-authenticated-user-id от IdP-прокси.
+  // session: доверяет только подписанной куки-сессии (боевой контур без доверенного прокси) — заголовки идентификации игнорируются.
+  authMode: "dev" | "header" | "session";
   storage?: Storage;
   scanner?: MalwareScanner;
   ai?: AiProvider;
@@ -156,7 +158,10 @@ export function buildApp(deps: AppDeps) {
   app.addHook("onRequest", async (req, reply) => {
     // В header-режиме доверяем только заголовку от identity-aware proxy; клиентский x-user-id не даёт
     // обойти лимит сменой значения. В dev-режиме идентификатор запроса — это и есть x-user-id.
-    const idKey = deps.authMode === "header" ? (req.headers["x-authenticated-user-id"] ?? req.ip) : (req.headers["x-user-id"] ?? req.ip);
+    // В session-режиме идентификация только по куке, поэтому ключ лимита — кука сессии или IP.
+    const idKey = deps.authMode === "header" ? (req.headers["x-authenticated-user-id"] ?? req.ip)
+      : deps.authMode === "dev" ? (req.headers["x-user-id"] ?? req.ip)
+      : (authn.readSession(authn.parseCookies(req.headers.cookie)["orbita_session"]) ?? req.ip);
     if (req.url.startsWith("/api/") && !limit(`${idKey}`)) {
       return reply.status(429).send({ error: "rate_limited", message: "Слишком много запросов, повторите через минуту" });
     }
@@ -184,7 +189,9 @@ export function buildApp(deps: AppDeps) {
     // Приоритет у подписанной куки-сессии (реальный вход через Google). Иначе fallback на заголовки:
     // dev — x-user-id (только вне production), header — доверенный x-authenticated-user-id от IdP-прокси.
     const sessionUid = authn.readSession(authn.parseCookies(req.headers.cookie)["orbita_session"]);
-    const id = sessionUid ?? (deps.authMode === "dev" ? (req.headers["x-user-id"] as string) : (req.headers["x-authenticated-user-id"] as string));
+    // session-режим: только кука, никакие заголовки идентификации не принимаются (боевой контур без доверенного прокси).
+    const header = deps.authMode === "dev" ? (req.headers["x-user-id"] as string) : deps.authMode === "header" ? (req.headers["x-authenticated-user-id"] as string) : undefined;
+    const id = sessionUid ?? header;
     if (!id || !/^[0-9a-f-]{36}$/.test(id)) throw Object.assign(new Error("Требуется вход"), { status: 401 });
     const actor = await loadActor(deps.db, id);
     if (!actor) throw Object.assign(new Error("Пользователь не найден или отключён"), { status: 401 });

@@ -14,7 +14,7 @@ import { notify } from "./notify";
 export interface CheckoutRequest { checkoutId: string; quantity: number; unitUsd: number; description: string; successUrl: string; cancelUrl: string }
 export interface PaymentEvent { type: "checkout_paid" | "renewed" | "canceled" | "payment_failed" | "ignored"; eventId?: string; checkoutId?: string; subscriptionRef?: string }
 export interface PaymentProvider {
-  name: "stripe" | "demo";
+  name: "stripe" | "demo" | "disabled";
   createCheckout(r: CheckoutRequest): Promise<{ sessionId: string; url: string }>;
   parseWebhook(raw: string, headers: Record<string, string | undefined>): PaymentEvent | null;
 }
@@ -67,10 +67,24 @@ export class DemoPaymentProvider implements PaymentProvider {
   parseWebhook() { return null; }
 }
 
+/**
+ * Боевой контур без Stripe: платежи ОТКЛЮЧЕНЫ. Конструктор не падает (платформа запускается и работает),
+ * но попытка оформить подписку возвращает понятную ошибку, а вебхук игнорируется. Так демо-подтверждение
+ * не выдаёт реальную подписку бесплатно, а остальная платформа доступна до подключения Stripe.
+ */
+export class DisabledPaymentProvider implements PaymentProvider {
+  name = "disabled" as const;
+  async createCheckout(): Promise<{ sessionId: string; url: string }> {
+    throw new ValidationError("Оплата подписки пока не подключена: задайте STRIPE_SECRET_KEY и STRIPE_WEBHOOK_SECRET");
+  }
+  parseWebhook() { return null; }
+}
+
 export function paymentsFromEnv(env = process.env): PaymentProvider {
   if (env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET) return new StripeProvider(env.STRIPE_SECRET_KEY, env.STRIPE_WEBHOOK_SECRET);
-  // В production демо-провайдер запрещён: иначе демо-подтверждение выдало бы реальную подписку бесплатно.
-  if (env.NODE_ENV === "production") throw new Error("В production обязателен Stripe: задайте STRIPE_SECRET_KEY и STRIPE_WEBHOOK_SECRET");
+  // В production демо-провайдер запрещён (иначе демо-подтверждение выдало бы реальную подписку бесплатно).
+  // Вместо падения на старте возвращаем отключённый провайдер: платформа работает, оформление подписки закрыто до Stripe.
+  if (env.NODE_ENV === "production") return new DisabledPaymentProvider();
   return new DemoPaymentProvider();
 }
 

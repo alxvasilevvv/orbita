@@ -12,11 +12,14 @@ RUN npm install --omit=dev --no-audit --no-fund
 COPY . .
 RUN npm run build:ui
 
-# Демо-режим рабочей платформы: демо-вход, засеянные данные, встроенный исполнитель.
-# Для боевого контура: NODE_ENV=production, AUTH_MODE=header, SECRETS_KEY и DATABASE_URL (Postgres),
-# отдельный процесс исполнителя src/worker/main.ts.
-ENV NODE_ENV=development \
-    AUTH_MODE=dev \
+# Боевой контур: production-режим, вход только по подписанной куки-сессии (email+пароль, Google),
+# заголовки идентификации не принимаются. Встроенный исполнитель оркестраций в том же процессе (INLINE_WORKER=1).
+# SECRETS_KEY и APP_URL заданы в окружении Unyly и переопределяют значения ниже.
+# SEED_DEMO=1 засевает демо-данные для первых клиентов и тестов (вход: демо-пользователь, пароль orbita2026).
+# Для постоянного хранения задайте DATABASE_URL (Postgres); иначе данные в PGlite эфемерны и пересоздаются при деплое.
+# Оплата подписок включается заданием STRIPE_SECRET_KEY и STRIPE_WEBHOOK_SECRET (без них касса отключена, платформа работает).
+ENV NODE_ENV=production \
+    AUTH_MODE=session \
     SEED_DEMO=1 \
     INLINE_WORKER=1 \
     WORKER_INTERVAL_MS=10000 \

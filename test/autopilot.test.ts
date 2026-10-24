@@ -577,8 +577,12 @@ describe("X (Twitter): адаптер и публикация через авт�
 });
 
 describe("биллинг: провайдер в production", () => {
-  it("paymentsFromEnv падает в production без ключей Stripe (нет демо fail-open)", () => {
-    expect(() => billing.paymentsFromEnv({ NODE_ENV: "production" } as any)).toThrow(/Stripe/);
+  it("в production без ключей Stripe провайдер отключён: платформа работает, оформить подписку нельзя (нет демо fail-open)", async () => {
+    const disabled = billing.paymentsFromEnv({ NODE_ENV: "production" } as any);
+    expect(disabled.name).toBe("disabled");
+    // Демо-подтверждение не выдаёт подписку бесплатно: касса отключена и возвращает понятную ошибку.
+    await expect(disabled.createCheckout({ checkoutId: "c", quantity: 1, unitUsd: 200, description: "x", successUrl: "s", cancelUrl: "c" })).rejects.toThrow(/STRIPE/);
+    expect(disabled.parseWebhook("{}", {})).toBeNull();
     expect(billing.paymentsFromEnv({ NODE_ENV: "development" } as any).name).toBe("demo");
     expect(billing.paymentsFromEnv({ STRIPE_SECRET_KEY: "sk", STRIPE_WEBHOOK_SECRET: "wh" } as any).name).toBe("stripe");
   });
